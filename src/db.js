@@ -156,6 +156,10 @@ db.exec(`
     value TEXT,
     unit TEXT,
     observed_at TEXT,
+    valid_from TEXT,
+    valid_to TEXT,
+    measurement_period TEXT,
+    temporal_scope_id INTEGER,
     context_id INTEGER,
     attributes TEXT,
     FOREIGN KEY (subject_entity_id) REFERENCES canonical_entities(id),
@@ -202,10 +206,44 @@ db.exec(`
     conditions TEXT,
     context_id INTEGER,
     confidence REAL,
+    magnitude REAL,
+    magnitude_unit TEXT,
+    lag REAL,
+    lag_unit TEXT,
+    strength REAL,
+    polarity TEXT,
+    certainty TEXT,
+    mechanism_description TEXT,
+    assumptions TEXT,
     attributes TEXT,
     FOREIGN KEY (source_entity_id) REFERENCES canonical_entities(id),
     FOREIGN KEY (target_entity_id) REFERENCES canonical_entities(id),
     FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS rule_conditions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER NOT NULL,
+    field TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    value TEXT,
+    unit TEXT,
+    logical_group TEXT DEFAULT 'all',
+    metadata TEXT,
+    FOREIGN KEY (rule_id) REFERENCES rules(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS provenance_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_type TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    evidence_id INTEGER NOT NULL,
+    extraction_id INTEGER,
+    transformation TEXT,
+    metadata TEXT,
+    UNIQUE (target_type, target_id, evidence_id),
+    FOREIGN KEY (evidence_id) REFERENCES evidence(id),
+    FOREIGN KEY (extraction_id) REFERENCES extractions(id)
   );
 
   CREATE TABLE IF NOT EXISTS source_assertions (
@@ -423,6 +461,19 @@ ensureColumn('relationships', 'jurisdiction_id', 'INTEGER');
 ensureColumn('scopes', 'jurisdiction_id', 'INTEGER');
 ensureColumn('scopes', 'temporal_scope_id', 'INTEGER');
 ensureColumn('source_assertions', 'proposition_id', 'INTEGER');
+ensureColumn('states', 'valid_from', 'TEXT');
+ensureColumn('states', 'valid_to', 'TEXT');
+ensureColumn('states', 'measurement_period', 'TEXT');
+ensureColumn('states', 'temporal_scope_id', 'INTEGER');
+ensureColumn('mechanisms', 'magnitude', 'REAL');
+ensureColumn('mechanisms', 'magnitude_unit', 'TEXT');
+ensureColumn('mechanisms', 'lag', 'REAL');
+ensureColumn('mechanisms', 'lag_unit', 'TEXT');
+ensureColumn('mechanisms', 'strength', 'REAL');
+ensureColumn('mechanisms', 'polarity', 'TEXT');
+ensureColumn('mechanisms', 'certainty', 'TEXT');
+ensureColumn('mechanisms', 'mechanism_description', 'TEXT');
+ensureColumn('mechanisms', 'assumptions', 'TEXT');
 
 function serializeMetadata(metadata) {
   return metadata == null ? null : JSON.stringify(metadata);
@@ -679,12 +730,12 @@ function insertProposition({ proposition_type = 'proposition', subject_entity_id
   return db.prepare('SELECT * FROM propositions WHERE id = ?').get(result.lastInsertRowid);
 }
 
-function insertState({ subject_entity_id = null, state_type, value = null, unit = null, observed_at = null, context_id = null, attributes = {} }) {
+function insertState({ subject_entity_id = null, state_type, value = null, unit = null, observed_at = null, valid_from = null, valid_to = null, measurement_period = null, temporal_scope_id = null, context_id = null, attributes = {} }) {
   const stmt = db.prepare(`
-    INSERT INTO states (subject_entity_id, state_type, value, unit, observed_at, context_id, attributes)
-    VALUES (@subject_entity_id, @state_type, @value, @unit, @observed_at, @context_id, @attributes)
+    INSERT INTO states (subject_entity_id, state_type, value, unit, observed_at, valid_from, valid_to, measurement_period, temporal_scope_id, context_id, attributes)
+    VALUES (@subject_entity_id, @state_type, @value, @unit, @observed_at, @valid_from, @valid_to, @measurement_period, @temporal_scope_id, @context_id, @attributes)
   `);
-  const result = stmt.run({ subject_entity_id, state_type, value, unit, observed_at, context_id, attributes: serializeMetadata(attributes) });
+  const result = stmt.run({ subject_entity_id, state_type, value, unit, observed_at, valid_from, valid_to, measurement_period, temporal_scope_id, context_id, attributes: serializeMetadata(attributes) });
   return db.prepare('SELECT * FROM states WHERE id = ?').get(result.lastInsertRowid);
 }
 
@@ -706,13 +757,32 @@ function insertRule({ rule_type, modality = 'required', subject_entity_id = null
   return db.prepare('SELECT * FROM rules WHERE id = ?').get(result.lastInsertRowid);
 }
 
-function insertMechanism({ mechanism_type, source_entity_id = null, target_entity_id = null, direction = null, conditions = null, context_id = null, confidence = null, attributes = {} }) {
+function insertMechanism({ mechanism_type, source_entity_id = null, target_entity_id = null, direction = null, conditions = null, context_id = null, confidence = null, magnitude = null, magnitude_unit = null, lag = null, lag_unit = null, strength = null, polarity = null, certainty = null, mechanism_description = null, assumptions = null, attributes = {} }) {
   const stmt = db.prepare(`
-    INSERT INTO mechanisms (mechanism_type, source_entity_id, target_entity_id, direction, conditions, context_id, confidence, attributes)
-    VALUES (@mechanism_type, @source_entity_id, @target_entity_id, @direction, @conditions, @context_id, @confidence, @attributes)
+    INSERT INTO mechanisms (mechanism_type, source_entity_id, target_entity_id, direction, conditions, context_id, confidence, magnitude, magnitude_unit, lag, lag_unit, strength, polarity, certainty, mechanism_description, assumptions, attributes)
+    VALUES (@mechanism_type, @source_entity_id, @target_entity_id, @direction, @conditions, @context_id, @confidence, @magnitude, @magnitude_unit, @lag, @lag_unit, @strength, @polarity, @certainty, @mechanism_description, @assumptions, @attributes)
   `);
-  const result = stmt.run({ mechanism_type, source_entity_id, target_entity_id, direction, conditions, context_id, confidence, attributes: serializeMetadata(attributes) });
+  const result = stmt.run({ mechanism_type, source_entity_id, target_entity_id, direction, conditions, context_id, confidence, magnitude, magnitude_unit, lag, lag_unit, strength, polarity, certainty, mechanism_description, assumptions, attributes: serializeMetadata(attributes) });
   return db.prepare('SELECT * FROM mechanisms WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertRuleCondition({ rule_id, field, operator, value = null, unit = null, logical_group = 'all', metadata = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO rule_conditions (rule_id, field, operator, value, unit, logical_group, metadata)
+    VALUES (@rule_id, @field, @operator, @value, @unit, @logical_group, @metadata)
+  `);
+  const result = stmt.run({ rule_id, field, operator, value, unit, logical_group, metadata: serializeMetadata(metadata) });
+  return db.prepare('SELECT * FROM rule_conditions WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertProvenanceLink({ target_type, target_id, evidence_id, extraction_id = null, transformation = 'derived_from_source_assertion', metadata = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO provenance_links (target_type, target_id, evidence_id, extraction_id, transformation, metadata)
+    VALUES (@target_type, @target_id, @evidence_id, @extraction_id, @transformation, @metadata)
+    ON CONFLICT(target_type, target_id, evidence_id) DO UPDATE SET metadata = excluded.metadata
+  `);
+  stmt.run({ target_type, target_id, evidence_id, extraction_id, transformation, metadata: serializeMetadata(metadata) });
+  return db.prepare('SELECT * FROM provenance_links WHERE target_type = ? AND target_id = ? AND evidence_id = ?').get(target_type, target_id, evidence_id);
 }
 
 function insertClaim({ extraction_id, claim_type = 'claim', subject, predicate, object, attributes = {} }) {
@@ -882,6 +952,8 @@ function listRecords() {
     events: deserializeRows(db.prepare('SELECT * FROM events ORDER BY id DESC').all(), ['attributes']),
     rules: deserializeRows(db.prepare('SELECT * FROM rules ORDER BY id DESC').all(), ['attributes']),
     mechanisms: deserializeRows(db.prepare('SELECT * FROM mechanisms ORDER BY id DESC').all(), ['attributes']),
+    rule_conditions: deserializeRows(db.prepare('SELECT * FROM rule_conditions ORDER BY id DESC').all(), ['metadata']),
+    provenance_links: deserializeRows(db.prepare('SELECT * FROM provenance_links ORDER BY id DESC').all(), ['metadata']),
     claims: deserializeRows(db.prepare('SELECT * FROM claims ORDER BY id DESC').all(), ['attributes']),
     observations: deserializeRows(db.prepare('SELECT * FROM observations ORDER BY id DESC').all(), ['attributes']),
     relationships: deserializeRows(db.prepare('SELECT * FROM relationships ORDER BY id DESC').all(), ['attributes']),
@@ -934,6 +1006,8 @@ module.exports = {
   insertEvent,
   insertRule,
   insertMechanism,
+  insertRuleCondition,
+  insertProvenanceLink,
   insertClaim,
   insertSourceAssertion,
   insertAssessment,

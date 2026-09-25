@@ -28,10 +28,12 @@ const {
   insertState,
   insertEvent,
   insertRule,
+  insertRuleCondition,
   insertMechanism,
   insertClaim,
   insertSourceAssertion,
   insertAssessment,
+  insertProvenanceLink,
   insertAssertionRelation,
   insertObservation,
   insertRelationship,
@@ -131,15 +133,28 @@ function resolveEvidenceLocations({ text, record, chunkRanges }) {
 
 function persistRecordEvidence({ artifact, contentRep, record, targetKey, text, chunkRanges }) {
   const locations = resolveEvidenceLocations({ text, record, chunkRanges });
-  locations.forEach((location) => {
-    insertEvidence({
+  return locations.map((location) => insertEvidence({
       artifact_id: artifact.id,
       content_representation_id: contentRep.id,
       chunk_id: location.chunk ? location.chunk.id : null,
       source_location: location.source_location,
       metadata: { [targetKey]: record.id, ...location.metadata }
-    });
-  });
+    }));
+}
+
+function linkProvenance(targetType, targetId, evidenceRows, extractionId) {
+  evidenceRows.forEach((evidence) => insertProvenanceLink({
+    target_type: targetType,
+    target_id: targetId,
+    evidence_id: evidence.id,
+    extraction_id: extractionId
+  }));
+}
+
+function parseCondition(conditionText) {
+  const match = String(conditionText || '').match(/^(.+?)\s+(below|above|under|over|equals|equal to|is less than|is greater than|=|<|>)\s+(.+)$/i);
+  if (!match) return null;
+  return { field: match[1].trim(), operator: match[2].toLowerCase(), value: match[3].trim() };
 }
 
 function parseRecordAttributes(record) {
@@ -171,6 +186,17 @@ function persistContext(attributes = {}) {
 
 function findAssertionContradictions(assertions) {
   const contradictionPairs = [];
+
+  function contextsOverlap(leftContext = {}, rightContext = {}) {
+    if (leftContext.jurisdiction && rightContext.jurisdiction && leftContext.jurisdiction.toLowerCase() !== rightContext.jurisdiction.toLowerCase()) return false;
+    if (leftContext.population && rightContext.population && leftContext.population.toLowerCase() !== rightContext.population.toLowerCase()) return false;
+    const leftDates = leftContext.temporal && leftContext.temporal.dates ? leftContext.temporal.dates.map(Number) : [];
+    const rightDates = rightContext.temporal && rightContext.temporal.dates ? rightContext.temporal.dates.map(Number) : [];
+    if (leftDates.length && rightDates.length && Math.max(...leftDates) < Math.min(...rightDates)) return false;
+    if (leftDates.length && rightDates.length && Math.max(...rightDates) < Math.min(...leftDates)) return false;
+    return true;
+  }
+
   for (let leftIndex = 0; leftIndex < assertions.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < assertions.length; rightIndex += 1) {
       const left = assertions[leftIndex];
@@ -181,7 +207,7 @@ function findAssertionContradictions(assertions) {
       const differentSources = left.source_id !== right.source_id || (leftAttributes.source_reference && rightAttributes.source_reference && leftAttributes.source_reference !== rightAttributes.source_reference);
       const differentOutcomes = left.predicate === right.predicate && String(left.object || '').toLowerCase() !== String(right.object || '').toLowerCase();
       const explicitOutcomeConflict = [left.predicate, right.predicate].includes('NO_STATISTICALLY_SIGNIFICANT_EFFECT') && [left.predicate, right.predicate].some((predicate) => ['REDUCES', 'INCREASES', 'IMPROVES'].includes(predicate));
-      if (sameSubject && differentSources && (differentOutcomes || explicitOutcomeConflict)) {
+      if (sameSubject && differentSources && contextsOverlap(leftAttributes.context, rightAttributes.context) && (differentOutcomes || explicitOutcomeConflict)) {
         const contradicting = left.predicate === 'NO_STATISTICALLY_SIGNIFICANT_EFFECT' ? left : right;
         const contradicted = contradicting.id === left.id ? right : left;
         contradictionPairs.push({ source_assertion_id: contradicting.id, target_assertion_id: contradicted.id });
@@ -356,6 +382,9 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
         state_type: observation.observation_type,
         value: observation.value,
         unit: observation.unit,
+        valid_from: context && context.temporal_scope_id ? db.prepare('SELECT valid_from FROM temporal_scopes WHERE id = ?').get(context.temporal_scope_id).valid_from : null,
+        valid_to: context && context.temporal_scope_id ? db.prepare('SELECT valid_to FROM temporal_scopes WHERE id = ?').get(context.temporal_scope_id).valid_to : null,
+        temporal_scope_id: context ? context.temporal_scope_id : null,
         context_id: context ? context.id : null,
         attributes: sourceObservation.attributes
       });
@@ -381,6 +410,13 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       status: 'candidate',
       attributes: { proposition_id: proposition.id }
     }));
+    rules.forEach((rule) => {
+      const ruleAttributes = parseRecordAttributes(rule);
+      const proposition = propositions.find((candidate) => candidate.id === ruleAttributes.proposition_id);
+      const context = proposition && proposition.context_id ? db.prepare('SELECT * FROM contexts WHERE id = ?').get(proposition.context_id) : null;
+      const condition = parseCondition(context && context.conditions);
+      if (condition) insertRuleCondition({ rule_id: rule.id, ...condition, metadata: { source: 'rule-based-candidate' } });
+    });
 
     const insertedRelationships = structured.relationships.slice(0, 10).map((relationship) => insertRelationship({
       extraction_id: extraction.id,
@@ -399,15 +435,40 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
         source_entity_id: relationship.subject_entity_id,
         target_entity_id: relationship.object_entity_id,
         context_id: context ? context.id : null,
+        conditions: context ? context.conditions : null,
+        certainty: 'candidate',
+        polarity: relationship.relationship_type === 'AFFECTS' ? 'unknown' : null,
+        mechanism_description: `${relationship.source_entity} ${relationship.relationship_type} ${relationship.target_entity}`,
         attributes: { relationship_id: relationship.id }
       });
     });
 
-    entityMentions.forEach((mention) => persistRecordEvidence({ artifact, contentRep, record: mention, targetKey: 'entity_mention_id', text: parsed.text, chunkRanges }));
-    insertedClaims.forEach((claim) => persistRecordEvidence({ artifact, contentRep, record: claim, targetKey: 'claim_id', text: parsed.text, chunkRanges }));
-    sourceAssertions.forEach((assertion) => persistRecordEvidence({ artifact, contentRep, record: assertion, targetKey: 'assertion_id', text: parsed.text, chunkRanges }));
-    insertedObservations.forEach((observation) => persistRecordEvidence({ artifact, contentRep, record: observation, targetKey: 'observation_id', text: parsed.text, chunkRanges }));
-    insertedRelationships.forEach((relationship) => persistRecordEvidence({ artifact, contentRep, record: relationship, targetKey: 'relationship_id', text: parsed.text, chunkRanges }));
+    const entityEvidence = entityMentions.map((mention) => persistRecordEvidence({ artifact, contentRep, record: mention, targetKey: 'entity_mention_id', text: parsed.text, chunkRanges }));
+    const claimEvidence = insertedClaims.map((claim) => persistRecordEvidence({ artifact, contentRep, record: claim, targetKey: 'claim_id', text: parsed.text, chunkRanges }));
+    const assertionEvidence = sourceAssertions.map((assertion) => persistRecordEvidence({ artifact, contentRep, record: assertion, targetKey: 'assertion_id', text: parsed.text, chunkRanges }));
+    const observationEvidence = insertedObservations.map((observation) => persistRecordEvidence({ artifact, contentRep, record: observation, targetKey: 'observation_id', text: parsed.text, chunkRanges }));
+    const relationshipEvidence = insertedRelationships.map((relationship) => persistRecordEvidence({ artifact, contentRep, record: relationship, targetKey: 'relationship_id', text: parsed.text, chunkRanges }));
+
+    entityEvidence.forEach((evidenceRows, index) => linkProvenance('entity_mention', entityMentions[index].id, evidenceRows, extraction.id));
+    claimEvidence.forEach((evidenceRows, index) => linkProvenance('proposition', propositions[index].id, evidenceRows, extraction.id));
+    assertionEvidence.forEach((evidenceRows, index) => linkProvenance('source_assertion', sourceAssertions[index].id, evidenceRows, extraction.id));
+    observationEvidence.forEach((evidenceRows, index) => linkProvenance('state', states[index].id, evidenceRows, extraction.id));
+    relationshipEvidence.forEach((evidenceRows, index) => linkProvenance('relationship', insertedRelationships[index].id, evidenceRows, extraction.id));
+    events.forEach((event) => {
+      const eventProposition = propositions.find((proposition) => proposition.id === parseRecordAttributes(event).proposition_id);
+      const eventIndex = eventProposition ? propositions.indexOf(eventProposition) : -1;
+      if (eventIndex >= 0) linkProvenance('event', event.id, claimEvidence[eventIndex], extraction.id);
+    });
+    rules.forEach((rule) => {
+      const ruleProposition = propositions.find((proposition) => proposition.id === parseRecordAttributes(rule).proposition_id);
+      const ruleIndex = ruleProposition ? propositions.indexOf(ruleProposition) : -1;
+      if (ruleIndex >= 0) linkProvenance('rule', rule.id, claimEvidence[ruleIndex], extraction.id);
+    });
+    mechanisms.forEach((mechanism) => {
+      const mechanismRelationship = insertedRelationships.find((relationship) => relationship.id === parseRecordAttributes(mechanism).relationship_id);
+      const mechanismIndex = mechanismRelationship ? insertedRelationships.indexOf(mechanismRelationship) : -1;
+      if (mechanismIndex >= 0) linkProvenance('mechanism', mechanism.id, relationshipEvidence[mechanismIndex], extraction.id);
+    });
 
     insertScope({
       extraction_id: extraction.id,

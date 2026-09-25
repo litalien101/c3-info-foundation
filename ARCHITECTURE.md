@@ -43,6 +43,8 @@ This MVP establishes the durable information foundation for ingesting source doc
 ### 7. System information layer
 - Uses reusable context records for jurisdiction, time, population, conditions, and definitions.
 - Models observed states, historical events, enforceable rules, and conditional mechanisms separately from graph projections.
+- Links every proposition, state, event, rule, and mechanism directly to evidence through `provenance_links`.
+- Keeps mechanism magnitude, lag, polarity, certainty, assumptions, and description available without pretending the extractor knows them when it does not.
 - Keeps the graph and AI context as derived views over these records.
 
 ### 8. AI knowledge base layer
@@ -62,6 +64,23 @@ This MVP establishes the durable information foundation for ingesting source doc
 
 ## Key implementation principle
 This MVP deliberately avoids destructive normalization. Where the source contains a value, unit, population, geography, or definition, the system preserves the original text and stores its derived interpretation alongside it.
+
+## Canonical lifecycle invariants
+```text
+RAW SOURCE
+	-> EXTRACTION
+	-> SOURCE ASSERTION
+	-> PROPOSITION / OBSERVATION / EVENT / RULE / MECHANISM
+	-> ASSESSMENT
+	-> CANONICAL RECORD
+	-> SYSTEM MODEL / GRAPH / AI CONTEXT
+```
+
+- A source assertion records what a source says; it is not a truth claim by C3.
+- A proposition is the canonical statement boundary; a claim remains for extraction compatibility.
+- Extracted rules, events, and mechanisms have candidate status until assessed.
+- Context is attached before comparing assertions; jurisdiction, population, and time mismatches are not automatic contradictions.
+- Evidence and provenance remain attached to canonical objects even when those objects are projected into a graph.
 
 ## Long-term objective
 The system is not meant to be a website that simply stores parsed data. It is meant to become an operational knowledge foundation for a larger AI-driven model of the United States' systems: sources become evidence, the parser becomes the ingestion layer, the canonical graph becomes the system map, and the AI knowledge base becomes the reasoning layer that powers interactive 3D visualization and systems optimization.

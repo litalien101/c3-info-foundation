@@ -170,7 +170,25 @@ A conditional pathway describing how one entity may affect, constrain, enable, c
 - conditions
 - context_id
 - confidence
+- magnitude / magnitude_unit
+- lag / lag_unit
+- strength
+- polarity
+- certainty
+- mechanism_description
+- assumptions
 - attributes
+
+### RuleCondition
+A queryable condition belonging to a rule instead of only an opaque condition string.
+- id
+- rule_id
+- field
+- operator
+- value
+- unit
+- logical_group
+- metadata
 
 ### Context
 Reusable jurisdiction, time, population, condition, and definition scope shared by canonical objects.
@@ -220,6 +238,16 @@ A reusable link from a result back to one or more source locations.
 - source_location
 - metadata
 
+### ProvenanceLink
+An explicit direct link from a canonical object to evidence.
+- id
+- target_type
+- target_id
+- evidence_id
+- extraction_id
+- transformation
+- metadata
+
 ## Design notes
 - Canonical data remains independent of AI-specific infrastructure.
 - Source statements are preserved as data, not treated as objective truth.
@@ -228,3 +256,5 @@ A reusable link from a result back to one or more source locations.
 - States, events, rules, and mechanisms are separate from generic relationships so system analysis does not flatten every arrow into the same edge type.
 - Reprocessing is allowed by re-running the extraction step against the preserved artifact.
 - Historical or revisionary records can be extended by adding version metadata in the future.
+- Candidate rules, events, and mechanisms are not canonical until an assessment promotes or rejects them.
+- Canonical objects must be provenance-linked; consumers should not infer provenance only by walking back through an extraction.
