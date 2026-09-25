@@ -24,6 +24,7 @@ const {
   insertClaim,
   insertSourceAssertion,
   insertAssessment,
+  insertAssertionRelation,
   insertObservation,
   insertRelationship,
   insertEvidence,
@@ -133,6 +134,37 @@ function persistRecordEvidence({ artifact, contentRep, record, targetKey, text, 
   });
 }
 
+function parseRecordAttributes(record) {
+  if (!record || typeof record.attributes !== 'string') return record && record.attributes ? record.attributes : {};
+  try {
+    return JSON.parse(record.attributes);
+  } catch (_error) {
+    return {};
+  }
+}
+
+function findAssertionContradictions(assertions) {
+  const contradictionPairs = [];
+  for (let leftIndex = 0; leftIndex < assertions.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < assertions.length; rightIndex += 1) {
+      const left = assertions[leftIndex];
+      const right = assertions[rightIndex];
+      const leftAttributes = parseRecordAttributes(left);
+      const rightAttributes = parseRecordAttributes(right);
+      const sameSubject = String(left.subject || '').toLowerCase() === String(right.subject || '').toLowerCase();
+      const differentSources = left.source_id !== right.source_id || (leftAttributes.source_reference && rightAttributes.source_reference && leftAttributes.source_reference !== rightAttributes.source_reference);
+      const differentOutcomes = left.predicate === right.predicate && String(left.object || '').toLowerCase() !== String(right.object || '').toLowerCase();
+      const explicitOutcomeConflict = [left.predicate, right.predicate].includes('NO_STATISTICALLY_SIGNIFICANT_EFFECT') && [left.predicate, right.predicate].some((predicate) => ['REDUCES', 'INCREASES', 'IMPROVES'].includes(predicate));
+      if (sameSubject && differentSources && (differentOutcomes || explicitOutcomeConflict)) {
+        const contradicting = left.predicate === 'NO_STATISTICALLY_SIGNIFICANT_EFFECT' ? left : right;
+        const contradicted = contradicting.id === left.id ? right : left;
+        contradictionPairs.push({ source_assertion_id: contradicting.id, target_assertion_id: contradicted.id });
+      }
+    }
+  }
+  return contradictionPairs;
+}
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(projectRoot, 'public', 'index.html'));
 });
@@ -184,9 +216,9 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       artifact_id: artifact.id,
       processing_version: processingVersion,
       schema_version: '2.0',
-      method: 'heuristic',
+      method: 'rule-based-candidate',
       model: 'local',
-      model_version: 'heuristic-v1',
+      model_version: 'rule-based-v2',
       prompt_version: 'initial-v1',
       status: 'completed'
     });
@@ -254,6 +286,15 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       });
       return assertion;
     });
+    const priorAssertions = db.prepare('SELECT * FROM source_assertions WHERE id NOT IN (' + sourceAssertions.map(() => '?').join(',') + ')').all(...sourceAssertions.map((assertion) => assertion.id));
+    const currentAssertionIds = new Set(sourceAssertions.map((assertion) => assertion.id));
+    const assertionRelations = findAssertionContradictions([...sourceAssertions, ...priorAssertions])
+      .filter((relation) => currentAssertionIds.has(relation.source_assertion_id) || currentAssertionIds.has(relation.target_assertion_id))
+      .map((relation) => insertAssertionRelation({
+      ...relation,
+      relation_type: 'CONTRADICTS',
+      metadata: { method: 'rule-based-candidate-v2', status: 'candidate' }
+      }));
 
     const insertedObservations = structured.observations.slice(0, 10).map((observation) => insertObservation({
       extraction_id: extraction.id,
@@ -299,6 +340,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       entityMentions,
       claims: insertedClaims,
       sourceAssertions,
+      assertionRelations,
       observations: insertedObservations,
       relationships: insertedRelationships,
       chunks: chunkRows

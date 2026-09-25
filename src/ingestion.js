@@ -223,6 +223,68 @@ function extractStructuredContent(documentText) {
   const claims = [];
   const observations = [];
 
+  const predicateMap = {
+    administers: 'ADMINISTERS',
+    funds: 'FUNDS',
+    regulates: 'REGULATES',
+    governs: 'GOVERNS',
+    requires: 'REQUIRES',
+    serves: 'SERVES',
+    affects: 'AFFECTS',
+    supports: 'SUPPORTS',
+    contradicts: 'CONTRADICTS',
+    supersedes: 'SUPERSEDES',
+    amends: 'AMENDS',
+    implements: 'IMPLEMENTS',
+    enforces: 'ENFORCES',
+    reduces: 'REDUCES',
+    reduced: 'REDUCES',
+    increases: 'INCREASES',
+    increased: 'INCREASES',
+    improves: 'IMPROVES',
+    changes: 'CHANGES',
+    'depends on': 'DEPENDS_ON',
+    'relies on': 'RELIES_ON',
+    'interacts with': 'INTERACTS_WITH'
+  };
+
+  function inferEntityType(label) {
+    const value = String(label || '').toLowerCase();
+    if (/regulation|rule|statute|law|mandate/.test(value)) return 'REGULATION';
+    if (/agency|department|commission|board|office|administration|authority|bureau/.test(value)) return 'AGENCY';
+    if (/program|service|initiative|benefit/.test(value)) return 'PROGRAM';
+    if (/court|system|institution|government/.test(value)) return 'INSTITUTION';
+    if (/family|families|children|workers|households|patients|veterans|students|population/.test(value)) return 'POPULATION';
+    if (/state|county|city|district|region|country|minnesota|california|texas|florida|new york/.test(value)) return 'JURISDICTION';
+    if (/poverty|unemployment|income|rate|cost|participation|outcome|effect/.test(value)) return 'MEASUREMENT';
+    return 'ENTITY';
+  }
+
+  function cleanEntityPhrase(value) {
+    return String(value || '')
+      .replace(/^(?:the|a|an)\s+/i, '')
+      .replace(/^(?:under|according to|pursuant to)\s+[^,]+,\s*/i, '')
+      .replace(/\s+(?:for|among|within|in|if|when|subject to)\s+.*$/i, '')
+      .replace(/[.]+$/, '')
+      .trim();
+  }
+
+  function extractContext(sentence) {
+    const context = {};
+    const jurisdictionMatch = sentence.match(/(?:under|within|in)\s+((?:the\s+)?[A-Z][A-Za-z-]+(?:\s+[A-Z][A-Za-z-]+)?)\s+(?:law|laws|regulation|regulations|jurisdiction|state|county)?/i);
+    if (jurisdictionMatch) context.jurisdiction = jurisdictionMatch[1].trim();
+
+    const dates = [...sentence.matchAll(/\b(?:19|20)\d{2}(?:-\d{2}-\d{2})?\b/g)].map((match) => match[0]);
+    if (dates.length) context.temporal = { dates, valid_from: dates[0], valid_to: dates.length > 1 ? dates[1] : null };
+
+    const populationMatch = sentence.match(/(?:for|among|serving|affecting)\s+([^,.]+(?:families|children|workers|households|patients|veterans|students|population|residents))/i);
+    if (populationMatch) context.population = populationMatch[1].trim();
+
+    const conditionMatch = sentence.match(/(?:if|when|provided that|subject to|eligibility depends on)\s+([^,.]+(?:\.|$))/i);
+    if (conditionMatch) context.conditions = conditionMatch[1].trim().replace(/[.]+$/, '');
+    return context;
+  }
+
   const jsonValue = safeJsonParse(text);
   const relationshipKeyMap = {
     affects: 'AFFECTS',
@@ -283,13 +345,14 @@ function extractStructuredContent(documentText) {
 
   const entityCandidates = [
     ...(text.match(/(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/g) || []),
+    ...(text.match(/(?:Agency|Program|Regulation|Law|Department|County|State|Population)\s+[A-Z][A-Za-z0-9-]*/g) || []),
     ...(text.match(/(?:Child Support Program|Court Systems|Unemployment|families|poverty|program)/gi) || []),
     ...(text.match(/(?:[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){1,3})/g) || [])
   ];
 
   for (const candidate of entityCandidates) {
     const clean = candidate.trim();
-    if (clean.length > 1) {
+    if (clean.length > 1 && /^(?:under|according|source)\b/i.test(clean) === false) {
       entityNames.add(clean.toLowerCase());
     }
   }
@@ -297,8 +360,8 @@ function extractStructuredContent(documentText) {
   const entities = dedupeList([...entityNames].map((entry) => {
     const label = entry.replace(/\s+/g, ' ').trim();
     const canonical = label.charAt(0).toUpperCase() + label.slice(1);
-    const type = /program|agency|service/i.test(label) ? 'PROGRAM' : /court|system|policy|law/i.test(label) ? 'SYSTEM' : /unemployment|poverty|income|family/i.test(label) ? 'MEASUREMENT' : 'ENTITY';
-    return { type, canonical_name: canonical, attributes: { source: 'heuristic' } };
+    const type = inferEntityType(canonical);
+    return { type, canonical_name: canonical, attributes: { source: 'rule-based-candidate', confidence: 0.55 } };
   }), (entity) => `${entity.type}|${entity.canonical_name}`);
 
   const sentenceMatches = [...text.matchAll(/[^.!?]+[.!?]?/g)];
@@ -307,19 +370,70 @@ function extractStructuredContent(documentText) {
     const normalizedSentence = sentence.trim();
     if (!normalizedSentence) continue;
     const sentenceEvidence = evidenceForText(text, normalizedSentence);
+    const context = extractContext(normalizedSentence);
+
+    const sourceStatement = normalizedSentence.match(/^(?:Source|Study|Report)\s+([A-Za-z0-9_-]+)\s+(?:says|reports|finds|states)\s+(.+)$/i);
+    if (sourceStatement) {
+      const sourceReference = sourceStatement[1];
+      const reportedText = sourceStatement[2].split(/\s+while\s+(?:Source|Study|Report)\b/i)[0].replace(/[.]+$/, '');
+      const reportedMatch = reportedText.match(/(.+?)\s+(reduced|increased|reduces|increases|affects|supports|contradicts)\s+(.+)/i);
+      const sourceAttributes = {
+        source_sentence: normalizedSentence,
+        evidence: sentenceEvidence,
+        context,
+        source_reference: sourceReference,
+        source_role: 'reported_assertion'
+      };
+      if (reportedMatch) {
+        claims.push({
+          claim_type: 'source_assertion',
+          subject: cleanEntityPhrase(reportedMatch[1]),
+          predicate: predicateMap[reportedMatch[2].toLowerCase()] || reportedMatch[2].toUpperCase(),
+          object: cleanEntityPhrase(reportedMatch[3]),
+          attributes: sourceAttributes
+        });
+      } else {
+        claims.push({
+          claim_type: 'source_assertion',
+          subject: claims.length ? claims[claims.length - 1].subject : 'Document',
+          predicate: /no statistically significant effect/i.test(reportedText) ? 'NO_STATISTICALLY_SIGNIFICANT_EFFECT' : 'REPORTS',
+          object: reportedText,
+          attributes: sourceAttributes
+        });
+      }
+
+      const secondarySource = normalizedSentence.match(/\bwhile\s+(?:Source|Study|Report)\s+([A-Za-z0-9_-]+)\s+(?:says|reports|finds|states)\s+(.+)$/i);
+      if (secondarySource) {
+        const secondaryText = secondarySource[2].replace(/[.]+$/, '');
+        claims.push({
+          claim_type: 'source_assertion',
+          subject: claims.length ? claims[claims.length - 1].subject : 'Document',
+          predicate: /no statistically significant effect/i.test(secondaryText) ? 'NO_STATISTICALLY_SIGNIFICANT_EFFECT' : 'REPORTS',
+          object: secondaryText,
+          attributes: {
+            source_sentence: normalizedSentence,
+            evidence: sentenceEvidence,
+            context,
+            source_reference: secondarySource[1],
+            source_role: 'reported_assertion'
+          }
+        });
+      }
+    }
 
     const claimPatterns = [
-      /(.*?)(?:reduces|increases|affects|improves|supports|changes)\s+(.+)/i,
-      /(.*?)(?:depends on|relies on|interacts with)\s+(.+)/i
+      new RegExp(`(.*?)(?:${Object.keys(predicateMap).join('|')})\\s+(.+)`, 'i'),
+      /(.*?)\s+(?:was|were)\s+(?:amended|superseded|repealed)\s+(?:in|by)\s+(.+)/i
     ];
 
     for (const pattern of claimPatterns) {
-      const match = normalizedSentence.match(pattern);
+      const match = sourceStatement ? null : normalizedSentence.match(pattern);
       if (match) {
-        const subject = match[1].replace(/^(?:The|A|An)\s+/i, '').trim() || 'Unknown subject';
-        const predicate = (match[0].match(/(?:reduces|increases|affects|improves|supports|changes|depends on|relies on|interacts with)/i) || [])[0] || 'RELATES_TO';
-        const object = match[2].trim() || 'Unknown object';
-        claims.push({ claim_type: 'claim', subject, predicate, object, attributes: { source_sentence: normalizedSentence, evidence: sentenceEvidence } });
+        const matchedPredicate = Object.keys(predicateMap).find((candidate) => new RegExp(`\\b${candidate}\\b`, 'i').test(match[0]));
+        const subject = cleanEntityPhrase(match[1]) || 'Unknown subject';
+        const predicate = matchedPredicate ? predicateMap[matchedPredicate] : (/amended/i.test(match[0]) ? 'AMENDED_IN' : /superseded/i.test(match[0]) ? 'SUPERSEDED_BY' : 'RELATES_TO');
+        const object = cleanEntityPhrase(match[2]) || 'Unknown object';
+        claims.push({ claim_type: 'claim', subject, predicate, object, attributes: { source_sentence: normalizedSentence, evidence: sentenceEvidence, context } });
       }
     }
 
@@ -327,16 +441,16 @@ function extractStructuredContent(documentText) {
     if (percentMatch) {
       const value = percentMatch[1];
       const subject = normalizedSentence.replace(percentMatch[0], '').replace(/^(?:The|A|An)\s+/i, '').trim() || 'Unknown subject';
-      observations.push({ observation_type: 'statistic', subject, value, unit: '%', attributes: { source_sentence: normalizedSentence, evidence: sentenceEvidence } });
+      observations.push({ observation_type: 'statistic', subject, value, unit: '%', attributes: { source_sentence: normalizedSentence, evidence: sentenceEvidence, context } });
     }
 
-    const relationshipMatch = normalizedSentence.match(/(.+?)\s+(affects|depends on|interacts with|supports)\s+(.+)/i);
+    const relationshipMatch = normalizedSentence.match(new RegExp(`(.+?)\\s+(${Object.keys(predicateMap).join('|')})\\s+(.+)`, 'i'));
     if (relationshipMatch) {
       relationships.push({
-        relationship_type: relationshipMatch[2].toUpperCase().replace(/\s+/g, '_'),
-        source_entity: relationshipMatch[1].trim().replace(/^(?:The|A|An)\s+/i, ''),
-        target_entity: relationshipMatch[3].trim().replace(/[.]+$/, ''),
-        attributes: { source_sentence: normalizedSentence, evidence: sentenceEvidence }
+        relationship_type: predicateMap[relationshipMatch[2].toLowerCase()] || relationshipMatch[2].toUpperCase().replace(/\s+/g, '_'),
+        source_entity: cleanEntityPhrase(relationshipMatch[1]),
+        target_entity: cleanEntityPhrase(relationshipMatch[3]),
+        attributes: { source_sentence: normalizedSentence, evidence: sentenceEvidence, context }
       });
     }
   }

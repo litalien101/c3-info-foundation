@@ -20,9 +20,9 @@ This MVP establishes the durable information foundation for ingesting source doc
 - Keeps chunk metadata available for later evidence tracing.
 
 ### 4. Extraction
-- Uses a deterministic heuristic extraction layer to create entities, claims, observations, and relationships.
+- Uses a deterministic rule-based candidate extraction layer to create typed entities, claims, observations, and relationships.
 - Stores extraction metadata including processing and schema version.
-- Treats heuristic output as candidate information, not verified truth.
+- Treats candidate output as structured source information, not verified truth.
 - Creates source assertions and unassessed assessments so later sources can support, contradict, review, or supersede an assertion.
 - Generates structured, queryable output while preserving evidence links.
 

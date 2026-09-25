@@ -34,6 +34,22 @@ test('extractStructuredContent removes repeated entity and claim duplicates', ()
   assert.ok(claimMatches.length === 1);
 });
 
+test('extractStructuredContent captures jurisdiction, conditions, time, and competing source assertions', () => {
+  const result = extractStructuredContent('Under Minnesota law, Agency X administers Program Y for eligible families if income is below the threshold. Regulation R was amended in 2024. Source A says Program Y reduced participation, while Source B reports no statistically significant effect.');
+
+  const administers = result.claims.find((claim) => claim.predicate === 'ADMINISTERS');
+  const amendment = result.claims.find((claim) => claim.predicate === 'AMENDED_IN');
+  const sourceA = result.claims.find((claim) => claim.attributes.source_reference === 'A');
+  const sourceB = result.claims.find((claim) => claim.attributes.source_reference === 'B');
+
+  assert.equal(administers.attributes.context.jurisdiction, 'Minnesota');
+  assert.equal(administers.attributes.context.population, 'eligible families');
+  assert.equal(administers.attributes.context.conditions, 'income is below the threshold');
+  assert.equal(amendment.attributes.context.temporal.valid_from, '2024');
+  assert.equal(sourceA.predicate, 'REDUCES');
+  assert.equal(sourceB.predicate, 'NO_STATISTICALLY_SIGNIFICANT_EFFECT');
+});
+
 test('parseDocument supports structured and unstructured formats and builds AI-ready context', async () => {
   const jsonDoc = {
     title: 'Programs',

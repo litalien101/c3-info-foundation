@@ -27,10 +27,12 @@ The goal is to build the underlying knowledge foundation first, then use that fo
 
 ## Evidence and identity guarantees
 - Extracted claims, observations, relationships, and entity mentions carry character offsets and quoted source text when the source span is available.
+- The candidate extractor recognizes typed entities, canonical relationship predicates, source-reported assertions, jurisdiction phrases, temporal expressions, populations, and conditional language. It is deterministic and replaceable; it is not presented as a general language model.
 - Evidence is resolved to the chunk containing the span. It is never assigned to the first chunk merely because it is convenient; unresolved evidence is explicitly marked as `unresolved`.
 - Extracted entities are document-level records. `canonical_entities`, `entity_aliases`, and `entity_mentions` provide the stable identity layer needed to connect mentions across documents.
 - Relationships retain their source and target names for compatibility and also store canonical subject/object IDs when those entities resolve within the extraction.
 - Temporal scopes, jurisdictions, domains, entity types, relationship types, and taxonomy tables are available as canonical storage primitives. The current heuristic extractor does not pretend to populate those concepts completely.
+- When separately referenced source assertions make incompatible outcome claims about the same subject, ingestion records a candidate `CONTRADICTS` relation. No source is automatically declared correct.
 
 The AI context remains a derived view. It is generated from canonical storage and evidence rather than acting as the source of truth.
 
