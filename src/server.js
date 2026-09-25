@@ -17,6 +17,9 @@ const {
   insertChunk,
   insertExtraction,
   insertEntity,
+  insertCanonicalEntity,
+  insertEntityAlias,
+  insertEntityMention,
   insertClaim,
   insertObservation,
   insertRelationship,
@@ -58,6 +61,73 @@ function buildPublicContext(data) {
     ...data,
     generated_at: new Date().toISOString()
   };
+}
+
+function findTextSpan(text, value, startAt = 0) {
+  const source = String(text || '');
+  const needle = String(value || '').trim();
+  if (!needle) return null;
+  const start = source.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase(), startAt);
+  if (start < 0) return null;
+  return {
+    character_start: start,
+    character_end: start + needle.length,
+    quoted_text: source.slice(start, start + needle.length)
+  };
+}
+
+function buildChunkRanges(text, chunkRows) {
+  let searchFrom = 0;
+  return chunkRows.map((chunk) => {
+    const span = findTextSpan(text, chunk.content, searchFrom);
+    if (span) searchFrom = span.character_end;
+    return { chunk, span };
+  });
+}
+
+function resolveEvidenceLocations({ text, record, chunkRanges }) {
+  let attributes = record.attributes;
+  if (typeof attributes === 'string') {
+    try {
+      attributes = JSON.parse(attributes);
+    } catch (_error) {
+      attributes = {};
+    }
+  }
+  attributes = attributes && typeof attributes === 'object' ? attributes : {};
+  const explicitEvidence = Array.isArray(attributes.evidence) ? attributes.evidence : [];
+  const sourceText = attributes.source_sentence || attributes.source_text || record.canonical_name || record.mention_text || record.subject || record.source_entity;
+  const fallbackSpan = findTextSpan(text, sourceText);
+  const spans = explicitEvidence.length ? explicitEvidence : (fallbackSpan ? [fallbackSpan] : []);
+
+  return spans.map((span) => {
+    const range = chunkRanges.find(({ span: chunkSpan }) => chunkSpan && span.character_start >= chunkSpan.character_start && span.character_start < chunkSpan.character_end);
+    const locationMetadata = range ? (range.chunk.location_metadata || {}) : {};
+    return {
+      chunk: range ? range.chunk : null,
+      source_location: range ? `chunk:${range.chunk.sequence}` : 'unresolved',
+      metadata: {
+        ...locationMetadata,
+        character_start: span.character_start,
+        character_end: span.character_end,
+        quoted_text: span.quoted_text,
+        resolved: Boolean(range)
+      }
+    };
+  });
+}
+
+function persistRecordEvidence({ artifact, contentRep, record, targetKey, text, chunkRanges }) {
+  const locations = resolveEvidenceLocations({ text, record, chunkRanges });
+  locations.forEach((location) => {
+    insertEvidence({
+      artifact_id: artifact.id,
+      content_representation_id: contentRep.id,
+      chunk_id: location.chunk ? location.chunk.id : null,
+      source_location: location.source_location,
+      metadata: { [targetKey]: record.id, ...location.metadata }
+    });
+  });
 }
 
 app.get('/', (req, res) => {
@@ -104,6 +174,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       content: chunk.content,
       location_metadata: chunk.location_metadata || { index: index + 1 }
     }));
+    const chunkRanges = buildChunkRanges(parsed.text, chunkRows);
 
     const extraction = insertExtraction({
       source_id: source.id,
@@ -118,12 +189,36 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
     });
 
     const structured = extractStructuredContent(parsed.text);
-    const insertedEntities = structured.entities.slice(0, 10).map((entity) => insertEntity({
+    const entityRecords = structured.entities.slice(0, 10);
+    const insertedEntities = entityRecords.map((entity) => insertEntity({
       extraction_id: extraction.id,
       type: entity.type,
       canonical_name: entity.canonical_name,
       attributes: entity.attributes
     }));
+
+    const entityMentions = insertedEntities.map((entity, index) => {
+      const sourceEntity = entityRecords[index];
+      const canonicalEntity = insertCanonicalEntity({
+        type: sourceEntity.type,
+        canonical_name: sourceEntity.canonical_name,
+        attributes: { source: 'heuristic-canonicalization' }
+      });
+      insertEntityAlias({
+        canonical_entity_id: canonicalEntity.id,
+        alias: sourceEntity.canonical_name,
+        alias_type: 'observed-label'
+      });
+      return insertEntityMention({
+        extraction_id: extraction.id,
+        entity_id: entity.id,
+        canonical_entity_id: canonicalEntity.id,
+        mention_text: sourceEntity.canonical_name,
+        confidence: null,
+        attributes: sourceEntity.attributes
+      });
+    });
+    const canonicalEntityIdsByName = new Map(entityMentions.map((mention) => [mention.mention_text.toLowerCase(), mention.canonical_entity_id]));
 
     const insertedClaims = structured.claims.slice(0, 10).map((claim) => insertClaim({
       extraction_id: extraction.id,
@@ -145,54 +240,18 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
 
     const insertedRelationships = structured.relationships.slice(0, 10).map((relationship) => insertRelationship({
       extraction_id: extraction.id,
+      subject_entity_id: canonicalEntityIdsByName.get(String(relationship.source_entity || '').toLowerCase()) || null,
+      object_entity_id: canonicalEntityIdsByName.get(String(relationship.target_entity || '').toLowerCase()) || null,
       relationship_type: relationship.relationship_type,
       source_entity: relationship.source_entity,
       target_entity: relationship.target_entity,
       attributes: relationship.attributes
     }));
 
-    const primaryChunk = chunkRows[0] || null;
-    if (primaryChunk) {
-      insertedEntities.forEach((entity, index) => {
-        insertEvidence({
-          artifact_id: artifact.id,
-          content_representation_id: contentRep.id,
-          chunk_id: primaryChunk.id,
-          source_location: `chunk:${index + 1}`,
-          metadata: { entity_id: entity.id, entity_type: entity.type }
-        });
-      });
-
-      insertedClaims.forEach((claim, index) => {
-        insertEvidence({
-          artifact_id: artifact.id,
-          content_representation_id: contentRep.id,
-          chunk_id: primaryChunk.id,
-          source_location: `chunk:${index + 1}`,
-          metadata: { claim_id: claim.id, claim_type: claim.claim_type }
-        });
-      });
-
-      insertedObservations.forEach((obs, index) => {
-        insertEvidence({
-          artifact_id: artifact.id,
-          content_representation_id: contentRep.id,
-          chunk_id: primaryChunk.id,
-          source_location: `chunk:${index + 1}`,
-          metadata: { observation_id: obs.id }
-        });
-      });
-
-      insertedRelationships.forEach((rel, index) => {
-        insertEvidence({
-          artifact_id: artifact.id,
-          content_representation_id: contentRep.id,
-          chunk_id: primaryChunk.id,
-          source_location: `chunk:${index + 1}`,
-          metadata: { relationship_id: rel.id }
-        });
-      });
-    }
+    entityMentions.forEach((mention) => persistRecordEvidence({ artifact, contentRep, record: mention, targetKey: 'entity_mention_id', text: parsed.text, chunkRanges }));
+    insertedClaims.forEach((claim) => persistRecordEvidence({ artifact, contentRep, record: claim, targetKey: 'claim_id', text: parsed.text, chunkRanges }));
+    insertedObservations.forEach((observation) => persistRecordEvidence({ artifact, contentRep, record: observation, targetKey: 'observation_id', text: parsed.text, chunkRanges }));
+    insertedRelationships.forEach((relationship) => persistRecordEvidence({ artifact, contentRep, record: relationship, targetKey: 'relationship_id', text: parsed.text, chunkRanges }));
 
     insertScope({
       extraction_id: extraction.id,
@@ -210,6 +269,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       contentRepresentation: contentRep,
       extraction,
       entities: insertedEntities,
+      entityMentions,
       claims: insertedClaims,
       observations: insertedObservations,
       relationships: insertedRelationships,

@@ -18,6 +18,10 @@ test('extractStructuredContent yields entities, claims, observations and relatio
   assert.ok(result.claims.length >= 1);
   assert.ok(result.observations.length >= 1);
   assert.ok(result.relationships.length >= 1);
+  const claimEvidence = result.claims[0].attributes.evidence[0];
+  assert.equal(claimEvidence.quoted_text, 'The Child Support Program reduces poverty.');
+  assert.equal(claimEvidence.character_start, 0);
+  assert.ok(claimEvidence.character_end > claimEvidence.character_start);
 });
 
 test('extractStructuredContent removes repeated entity and claim duplicates', () => {

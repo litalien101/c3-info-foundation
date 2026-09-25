@@ -30,6 +30,25 @@ function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function findTextSpan(text, value, startAt = 0) {
+  const source = String(text || '');
+  const needle = String(value || '').trim();
+  if (!needle) return null;
+
+  const start = source.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase(), startAt);
+  if (start < 0) return null;
+  return {
+    character_start: start,
+    character_end: start + needle.length,
+    quoted_text: source.slice(start, start + needle.length)
+  };
+}
+
+function evidenceForText(text, value) {
+  const span = findTextSpan(text, value);
+  return span ? [span] : [];
+}
+
 function safeJsonParse(text) {
   try {
     return JSON.parse(text);
@@ -282,10 +301,12 @@ function extractStructuredContent(documentText) {
     return { type, canonical_name: canonical, attributes: { source: 'heuristic' } };
   }), (entity) => `${entity.type}|${entity.canonical_name}`);
 
-  const sentenceMatches = text.split(/(?<=[.!?])\s+/).filter(Boolean);
-  for (const sentence of sentenceMatches) {
+  const sentenceMatches = [...text.matchAll(/[^.!?]+[.!?]?/g)];
+  for (const sentenceMatch of sentenceMatches) {
+    const sentence = sentenceMatch[0];
     const normalizedSentence = sentence.trim();
     if (!normalizedSentence) continue;
+    const sentenceEvidence = evidenceForText(text, normalizedSentence);
 
     const claimPatterns = [
       /(.*?)(?:reduces|increases|affects|improves|supports|changes)\s+(.+)/i,
@@ -298,7 +319,7 @@ function extractStructuredContent(documentText) {
         const subject = match[1].replace(/^(?:The|A|An)\s+/i, '').trim() || 'Unknown subject';
         const predicate = (match[0].match(/(?:reduces|increases|affects|improves|supports|changes|depends on|relies on|interacts with)/i) || [])[0] || 'RELATES_TO';
         const object = match[2].trim() || 'Unknown object';
-        claims.push({ claim_type: 'claim', subject, predicate, object, attributes: { source_sentence: normalizedSentence } });
+        claims.push({ claim_type: 'claim', subject, predicate, object, attributes: { source_sentence: normalizedSentence, evidence: sentenceEvidence } });
       }
     }
 
@@ -306,7 +327,7 @@ function extractStructuredContent(documentText) {
     if (percentMatch) {
       const value = percentMatch[1];
       const subject = normalizedSentence.replace(percentMatch[0], '').replace(/^(?:The|A|An)\s+/i, '').trim() || 'Unknown subject';
-      observations.push({ observation_type: 'statistic', subject, value, unit: '%', attributes: { source_sentence: normalizedSentence } });
+      observations.push({ observation_type: 'statistic', subject, value, unit: '%', attributes: { source_sentence: normalizedSentence, evidence: sentenceEvidence } });
     }
 
     const relationshipMatch = normalizedSentence.match(/(.+?)\s+(affects|depends on|interacts with|supports)\s+(.+)/i);
@@ -315,7 +336,7 @@ function extractStructuredContent(documentText) {
         relationship_type: relationshipMatch[2].toUpperCase().replace(/\s+/g, '_'),
         source_entity: relationshipMatch[1].trim().replace(/^(?:The|A|An)\s+/i, ''),
         target_entity: relationshipMatch[3].trim().replace(/[.]+$/, ''),
-        attributes: { source_sentence: normalizedSentence }
+        attributes: { source_sentence: normalizedSentence, evidence: sentenceEvidence }
       });
     }
   }
@@ -323,14 +344,14 @@ function extractStructuredContent(documentText) {
   if (!claims.length) {
     const generic = text.split(/(?<=[.!?])\s+/)[0];
     if (generic) {
-      claims.push({ claim_type: 'claim', subject: 'Document', predicate: 'DESCRIBES', object: generic.slice(0, 160), attributes: { source_sentence: generic } });
+      claims.push({ claim_type: 'claim', subject: 'Document', predicate: 'DESCRIBES', object: generic.slice(0, 160), attributes: { source_sentence: generic, evidence: evidenceForText(text, generic) } });
     }
   }
 
   if (!observations.length) {
     const numeric = text.match(/(\d+(?:\.\d+)?(?:%|million|billion|thousand)?)/g) || [];
     for (const value of numeric.slice(0, 2)) {
-      observations.push({ observation_type: 'statistic', subject: 'Document', value, unit: value.includes('%') ? '%' : 'measure', attributes: { source_text: text.slice(0, 160) } });
+      observations.push({ observation_type: 'statistic', subject: 'Document', value, unit: value.includes('%') ? '%' : 'measure', attributes: { source_text: text.slice(0, 160), evidence: evidenceForText(text, text.slice(0, 160)) } });
     }
   }
 
