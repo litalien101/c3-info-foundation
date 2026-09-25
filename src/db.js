@@ -149,6 +149,28 @@ db.exec(`
     FOREIGN KEY (context_id) REFERENCES contexts(id)
   );
 
+  CREATE TABLE IF NOT EXISTS canonical_propositions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    base_fingerprint TEXT NOT NULL,
+    representative_proposition_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'candidate',
+    attributes TEXT,
+    FOREIGN KEY (representative_proposition_id) REFERENCES propositions(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS proposition_resolutions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical_proposition_id INTEGER NOT NULL,
+    proposition_id INTEGER NOT NULL,
+    resolution_type TEXT NOT NULL,
+    confidence REAL,
+    metadata TEXT,
+    UNIQUE (canonical_proposition_id, proposition_id, resolution_type),
+    FOREIGN KEY (canonical_proposition_id) REFERENCES canonical_propositions(id),
+    FOREIGN KEY (proposition_id) REFERENCES propositions(id)
+  );
+
   CREATE TABLE IF NOT EXISTS states (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     subject_entity_id INTEGER,
@@ -219,6 +241,28 @@ db.exec(`
     FOREIGN KEY (source_entity_id) REFERENCES canonical_entities(id),
     FOREIGN KEY (target_entity_id) REFERENCES canonical_entities(id),
     FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS canonical_mechanisms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    base_fingerprint TEXT NOT NULL,
+    representative_mechanism_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'candidate',
+    attributes TEXT,
+    FOREIGN KEY (representative_mechanism_id) REFERENCES mechanisms(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS mechanism_resolutions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical_mechanism_id INTEGER NOT NULL,
+    mechanism_id INTEGER NOT NULL,
+    resolution_type TEXT NOT NULL,
+    confidence REAL,
+    metadata TEXT,
+    UNIQUE (canonical_mechanism_id, mechanism_id, resolution_type),
+    FOREIGN KEY (canonical_mechanism_id) REFERENCES canonical_mechanisms(id),
+    FOREIGN KEY (mechanism_id) REFERENCES mechanisms(id)
   );
 
   CREATE TABLE IF NOT EXISTS rule_conditions (
@@ -730,6 +774,26 @@ function insertProposition({ proposition_type = 'proposition', subject_entity_id
   return db.prepare('SELECT * FROM propositions WHERE id = ?').get(result.lastInsertRowid);
 }
 
+function insertCanonicalProposition({ fingerprint, base_fingerprint, representative_proposition_id, status = 'candidate', attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO canonical_propositions (fingerprint, base_fingerprint, representative_proposition_id, status, attributes)
+    VALUES (@fingerprint, @base_fingerprint, @representative_proposition_id, @status, @attributes)
+    ON CONFLICT(fingerprint) DO UPDATE SET status = excluded.status
+  `);
+  stmt.run({ fingerprint, base_fingerprint, representative_proposition_id, status, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM canonical_propositions WHERE fingerprint = ?').get(fingerprint);
+}
+
+function insertPropositionResolution({ canonical_proposition_id, proposition_id, resolution_type, confidence = null, metadata = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO proposition_resolutions (canonical_proposition_id, proposition_id, resolution_type, confidence, metadata)
+    VALUES (@canonical_proposition_id, @proposition_id, @resolution_type, @confidence, @metadata)
+    ON CONFLICT(canonical_proposition_id, proposition_id, resolution_type) DO UPDATE SET confidence = excluded.confidence
+  `);
+  stmt.run({ canonical_proposition_id, proposition_id, resolution_type, confidence, metadata: serializeMetadata(metadata) });
+  return db.prepare('SELECT * FROM proposition_resolutions WHERE canonical_proposition_id = ? AND proposition_id = ? AND resolution_type = ?').get(canonical_proposition_id, proposition_id, resolution_type);
+}
+
 function insertState({ subject_entity_id = null, state_type, value = null, unit = null, observed_at = null, valid_from = null, valid_to = null, measurement_period = null, temporal_scope_id = null, context_id = null, attributes = {} }) {
   const stmt = db.prepare(`
     INSERT INTO states (subject_entity_id, state_type, value, unit, observed_at, valid_from, valid_to, measurement_period, temporal_scope_id, context_id, attributes)
@@ -764,6 +828,26 @@ function insertMechanism({ mechanism_type, source_entity_id = null, target_entit
   `);
   const result = stmt.run({ mechanism_type, source_entity_id, target_entity_id, direction, conditions, context_id, confidence, magnitude, magnitude_unit, lag, lag_unit, strength, polarity, certainty, mechanism_description, assumptions, attributes: serializeMetadata(attributes) });
   return db.prepare('SELECT * FROM mechanisms WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertCanonicalMechanism({ fingerprint, base_fingerprint, representative_mechanism_id, status = 'candidate', attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO canonical_mechanisms (fingerprint, base_fingerprint, representative_mechanism_id, status, attributes)
+    VALUES (@fingerprint, @base_fingerprint, @representative_mechanism_id, @status, @attributes)
+    ON CONFLICT(fingerprint) DO UPDATE SET status = excluded.status
+  `);
+  stmt.run({ fingerprint, base_fingerprint, representative_mechanism_id, status, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM canonical_mechanisms WHERE fingerprint = ?').get(fingerprint);
+}
+
+function insertMechanismResolution({ canonical_mechanism_id, mechanism_id, resolution_type, confidence = null, metadata = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO mechanism_resolutions (canonical_mechanism_id, mechanism_id, resolution_type, confidence, metadata)
+    VALUES (@canonical_mechanism_id, @mechanism_id, @resolution_type, @confidence, @metadata)
+    ON CONFLICT(canonical_mechanism_id, mechanism_id, resolution_type) DO UPDATE SET confidence = excluded.confidence
+  `);
+  stmt.run({ canonical_mechanism_id, mechanism_id, resolution_type, confidence, metadata: serializeMetadata(metadata) });
+  return db.prepare('SELECT * FROM mechanism_resolutions WHERE canonical_mechanism_id = ? AND mechanism_id = ? AND resolution_type = ?').get(canonical_mechanism_id, mechanism_id, resolution_type);
 }
 
 function insertRuleCondition({ rule_id, field, operator, value = null, unit = null, logical_group = 'all', metadata = {} }) {
@@ -948,10 +1032,14 @@ function listRecords() {
     entity_mentions: deserializeRows(db.prepare('SELECT * FROM entity_mentions ORDER BY id DESC').all(), ['attributes']),
     contexts: deserializeRows(db.prepare('SELECT * FROM contexts ORDER BY id DESC').all(), ['metadata']),
     propositions: deserializeRows(db.prepare('SELECT * FROM propositions ORDER BY id DESC').all(), ['attributes']),
+    canonical_propositions: deserializeRows(db.prepare('SELECT * FROM canonical_propositions ORDER BY id DESC').all(), ['attributes']),
+    proposition_resolutions: deserializeRows(db.prepare('SELECT * FROM proposition_resolutions ORDER BY id DESC').all(), ['metadata']),
     states: deserializeRows(db.prepare('SELECT * FROM states ORDER BY id DESC').all(), ['attributes']),
     events: deserializeRows(db.prepare('SELECT * FROM events ORDER BY id DESC').all(), ['attributes']),
     rules: deserializeRows(db.prepare('SELECT * FROM rules ORDER BY id DESC').all(), ['attributes']),
     mechanisms: deserializeRows(db.prepare('SELECT * FROM mechanisms ORDER BY id DESC').all(), ['attributes']),
+    canonical_mechanisms: deserializeRows(db.prepare('SELECT * FROM canonical_mechanisms ORDER BY id DESC').all(), ['attributes']),
+    mechanism_resolutions: deserializeRows(db.prepare('SELECT * FROM mechanism_resolutions ORDER BY id DESC').all(), ['metadata']),
     rule_conditions: deserializeRows(db.prepare('SELECT * FROM rule_conditions ORDER BY id DESC').all(), ['metadata']),
     provenance_links: deserializeRows(db.prepare('SELECT * FROM provenance_links ORDER BY id DESC').all(), ['metadata']),
     claims: deserializeRows(db.prepare('SELECT * FROM claims ORDER BY id DESC').all(), ['attributes']),
@@ -1002,10 +1090,14 @@ module.exports = {
   insertTemporalScope,
   insertContext,
   insertProposition,
+  insertCanonicalProposition,
+  insertPropositionResolution,
   insertState,
   insertEvent,
   insertRule,
   insertMechanism,
+  insertCanonicalMechanism,
+  insertMechanismResolution,
   insertRuleCondition,
   insertProvenanceLink,
   insertClaim,

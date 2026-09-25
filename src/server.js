@@ -25,11 +25,15 @@ const {
   insertTemporalScope,
   insertContext,
   insertProposition,
+  insertCanonicalProposition,
+  insertPropositionResolution,
   insertState,
   insertEvent,
   insertRule,
   insertRuleCondition,
   insertMechanism,
+  insertCanonicalMechanism,
+  insertMechanismResolution,
   insertClaim,
   insertSourceAssertion,
   insertAssessment,
@@ -155,6 +159,73 @@ function parseCondition(conditionText) {
   const match = String(conditionText || '').match(/^(.+?)\s+(below|above|under|over|equals|equal to|is less than|is greater than|=|<|>)\s+(.+)$/i);
   if (!match) return null;
   return { field: match[1].trim(), operator: match[2].toLowerCase(), value: match[3].trim() };
+}
+
+function normalizeMergeValue(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function contextFingerprint(contextId) {
+  if (!contextId) return 'none';
+  const context = db.prepare(`
+    SELECT contexts.population, contexts.conditions, jurisdictions.name AS jurisdiction,
+           temporal_scopes.valid_from, temporal_scopes.valid_to
+    FROM contexts
+    LEFT JOIN jurisdictions ON jurisdictions.id = contexts.jurisdiction_id
+    LEFT JOIN temporal_scopes ON temporal_scopes.id = contexts.temporal_scope_id
+    WHERE contexts.id = ?
+  `).get(contextId);
+  return context ? [context.jurisdiction, context.population, context.conditions, context.valid_from, context.valid_to].map(normalizeMergeValue).join('|') : 'none';
+}
+
+function resolvePropositionMerge(proposition) {
+  const subject = proposition.subject_entity_id || normalizeMergeValue(proposition.subject_text);
+  const object = proposition.object_entity_id || normalizeMergeValue(proposition.object_text);
+  const baseFingerprint = [subject, normalizeMergeValue(proposition.predicate)].join('|');
+  const fingerprint = [baseFingerprint, object, contextFingerprint(proposition.context_id)].join('|');
+  const exact = db.prepare('SELECT * FROM canonical_propositions WHERE fingerprint = ?').get(fingerprint);
+  const base = db.prepare('SELECT * FROM canonical_propositions WHERE base_fingerprint = ? ORDER BY id LIMIT 1').get(baseFingerprint);
+  const canonical = exact || insertCanonicalProposition({
+    fingerprint,
+    base_fingerprint: baseFingerprint,
+    representative_proposition_id: proposition.id,
+    attributes: { resolution: 'deterministic-fingerprint' }
+  });
+  const representative = base ? db.prepare('SELECT object_entity_id, object_text FROM propositions WHERE id = ?').get(base.representative_proposition_id) : null;
+  const representativeObject = representative ? representative.object_entity_id || normalizeMergeValue(representative.object_text) : null;
+  const resolutionType = exact ? 'SAME_AS' : base ? (representativeObject === object ? 'QUALIFIED_BY' : 'CONFLICTS') : 'CANONICAL_MEMBER';
+  const resolvedCanonical = exact || canonical;
+  return insertPropositionResolution({
+    canonical_proposition_id: resolvedCanonical.id,
+    proposition_id: proposition.id,
+    resolution_type: resolutionType,
+    confidence: exact ? 1 : base ? 0.8 : 0.7,
+    metadata: { method: 'deterministic-fingerprint-v1' }
+  });
+}
+
+function resolveMechanismMerge(mechanism) {
+  const source = mechanism.source_entity_id || normalizeMergeValue(mechanism.mechanism_description);
+  const target = mechanism.target_entity_id || normalizeMergeValue(mechanism.mechanism_description);
+  const baseFingerprint = [normalizeMergeValue(mechanism.mechanism_type), source, target].join('|');
+  const fingerprint = [baseFingerprint, contextFingerprint(mechanism.context_id)].join('|');
+  const exact = db.prepare('SELECT * FROM canonical_mechanisms WHERE fingerprint = ?').get(fingerprint);
+  const base = db.prepare('SELECT * FROM canonical_mechanisms WHERE base_fingerprint = ? ORDER BY id LIMIT 1').get(baseFingerprint);
+  const canonical = exact || insertCanonicalMechanism({
+    fingerprint,
+    base_fingerprint: baseFingerprint,
+    representative_mechanism_id: mechanism.id,
+    attributes: { resolution: 'deterministic-fingerprint' }
+  });
+  const resolutionType = exact ? 'SAME_AS' : base ? 'QUALIFIED_BY' : 'CANONICAL_MEMBER';
+  const resolvedCanonical = exact || canonical;
+  return insertMechanismResolution({
+    canonical_mechanism_id: resolvedCanonical.id,
+    mechanism_id: mechanism.id,
+    resolution_type: resolutionType,
+    confidence: exact ? 1 : base ? 0.8 : 0.7,
+    metadata: { method: 'deterministic-fingerprint-v1' }
+  });
 }
 
 function parseRecordAttributes(record) {
@@ -331,6 +402,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
         attributes: sourceClaim.attributes
       });
     });
+    const propositionResolutions = propositions.map((proposition) => resolvePropositionMerge(proposition));
 
     const sourceAssertions = insertedClaims.map((claim, index) => {
       const sourceClaim = structured.claims[index];
@@ -442,6 +514,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
         attributes: { relationship_id: relationship.id }
       });
     });
+    const mechanismResolutions = mechanisms.map((mechanism) => resolveMechanismMerge(mechanism));
 
     const entityEvidence = entityMentions.map((mention) => persistRecordEvidence({ artifact, contentRep, record: mention, targetKey: 'entity_mention_id', text: parsed.text, chunkRanges }));
     const claimEvidence = insertedClaims.map((claim) => persistRecordEvidence({ artifact, contentRep, record: claim, targetKey: 'claim_id', text: parsed.text, chunkRanges }));
@@ -489,6 +562,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       entityMentions,
       claims: insertedClaims,
       propositions,
+      propositionResolutions,
       sourceAssertions,
       assertionRelations,
       observations: insertedObservations,
@@ -497,6 +571,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       rules,
       relationships: insertedRelationships,
       mechanisms,
+      mechanismResolutions,
       chunks: chunkRows
     };
   })();
@@ -588,12 +663,14 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         entities: processed.entities,
         claims: processed.claims,
         propositions: processed.propositions,
+        propositionResolutions: processed.propositionResolutions,
         observations: processed.observations,
         states: processed.states,
         events: processed.events,
         rules: processed.rules,
         relationships: processed.relationships,
         mechanisms: processed.mechanisms,
+        mechanismResolutions: processed.mechanismResolutions,
         sourceAssertions: processed.sourceAssertions,
         assertionRelations: processed.assertionRelations,
         chunks: processed.chunks,
@@ -652,7 +729,13 @@ app.get('/api/knowledge-base', (req, res) => {
     entities: records.entities || [],
     relationships: records.relationships || [],
     claims: records.claims || [],
-    observations: records.observations || []
+    observations: records.observations || [],
+    propositions: records.propositions || [],
+    states: records.states || [],
+    events: records.events || [],
+    rules: records.rules || [],
+    mechanisms: records.mechanisms || [],
+    canonical_entities: records.canonical_entities || []
   });
 
   const knowledgeBase = {
@@ -670,7 +753,12 @@ app.get('/api/knowledge-base', (req, res) => {
       edgeCount: graph.summary.edgeCount,
       relationshipCount: graph.summary.relationshipCount,
       claimCount: graph.summary.claimCount,
-      observationCount: graph.summary.observationCount
+      observationCount: graph.summary.observationCount,
+      propositionCount: graph.summary.propositionCount,
+      stateCount: graph.summary.stateCount,
+      eventCount: graph.summary.eventCount,
+      ruleCount: graph.summary.ruleCount,
+      mechanismCount: graph.summary.mechanismCount
     }
   };
 
@@ -684,7 +772,13 @@ app.get('/api/ontology', (req, res) => {
     entities: records.entities || [],
     relationships: records.relationships || [],
     claims: records.claims || [],
-    observations: records.observations || []
+    observations: records.observations || [],
+    propositions: records.propositions || [],
+    states: records.states || [],
+    events: records.events || [],
+    rules: records.rules || [],
+    mechanisms: records.mechanisms || [],
+    canonical_entities: records.canonical_entities || []
   });
 
   const counts = {};

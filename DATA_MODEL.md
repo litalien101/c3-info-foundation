@@ -125,6 +125,9 @@ A canonical, context-aware representation of a subject/predicate/object statemen
 - context_id
 - attributes
 
+### CanonicalProposition and PropositionResolution
+`canonical_propositions` stores a representative fingerprint; `proposition_resolutions` connects each extracted proposition to that representative as `CANONICAL_MEMBER`, `SAME_AS`, `QUALIFIED_BY`, or `CONFLICTS`.
+
 ### State
 A value or condition observed for an entity at a point or period in time.
 - id
@@ -178,6 +181,9 @@ A conditional pathway describing how one entity may affect, constrain, enable, c
 - mechanism_description
 - assumptions
 - attributes
+
+### CanonicalMechanism and MechanismResolution
+Mechanism representatives and immutable extracted mechanism rows are connected through the same resolution pattern used for propositions.
 
 ### RuleCondition
 A queryable condition belonging to a rule instead of only an opaque condition string.

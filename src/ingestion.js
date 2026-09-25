@@ -561,6 +561,12 @@ function buildKnowledgeBaseGraph(records = {}) {
   const relationships = Array.isArray(records.relationships) ? records.relationships : [];
   const claims = Array.isArray(records.claims) ? records.claims : [];
   const observations = Array.isArray(records.observations) ? records.observations : [];
+  const propositions = Array.isArray(records.propositions) ? records.propositions : [];
+  const states = Array.isArray(records.states) ? records.states : [];
+  const events = Array.isArray(records.events) ? records.events : [];
+  const rules = Array.isArray(records.rules) ? records.rules : [];
+  const mechanisms = Array.isArray(records.mechanisms) ? records.mechanisms : [];
+  const canonicalEntities = Array.isArray(records.canonical_entities) ? records.canonical_entities : [];
   const sources = Array.isArray(records.sources) ? records.sources : [];
 
   const nodeMap = new Map();
@@ -600,6 +606,41 @@ function buildKnowledgeBaseGraph(records = {}) {
     addNode(label, inferredType, entity.attributes || {});
   }
 
+  const entityLabelsById = new Map(canonicalEntities.map((entity) => [entity.id, entity.canonical_name]));
+
+  for (const proposition of propositions) {
+    const subject = proposition.subject_text || entityLabelsById.get(proposition.subject_entity_id) || 'Unknown subject';
+    const object = proposition.object_text || entityLabelsById.get(proposition.object_entity_id) || 'Unknown object';
+    addNode(subject, inferOntologyType(subject, 'PROPOSITION_SUBJECT'), { source: 'proposition' });
+    addNode(object, inferOntologyType(object, 'PROPOSITION_OBJECT'), { source: 'proposition' });
+  }
+
+  for (const state of states) {
+    const subject = entityLabelsById.get(state.subject_entity_id) || state.subject || 'Unknown state subject';
+    addNode(subject, inferOntologyType(subject, 'STATE_SUBJECT'), { source: 'state', state_type: state.state_type });
+  }
+
+  for (const event of events) {
+    const subject = entityLabelsById.get(event.subject_entity_id) || 'Unknown event subject';
+    const object = entityLabelsById.get(event.object_entity_id) || 'Unknown event object';
+    addNode(subject, inferOntologyType(subject, 'EVENT_SUBJECT'), { source: 'event' });
+    addNode(object, inferOntologyType(object, 'EVENT_OBJECT'), { source: 'event' });
+  }
+
+  for (const rule of rules) {
+    const subject = entityLabelsById.get(rule.subject_entity_id) || 'Unknown rule subject';
+    const object = entityLabelsById.get(rule.object_entity_id) || 'Unknown rule object';
+    addNode(subject, inferOntologyType(subject, 'RULE_SUBJECT'), { source: 'rule', status: rule.status });
+    addNode(object, inferOntologyType(object, 'RULE_OBJECT'), { source: 'rule' });
+  }
+
+  for (const mechanism of mechanisms) {
+    const sourceName = entityLabelsById.get(mechanism.source_entity_id) || 'Unknown mechanism source';
+    const targetName = entityLabelsById.get(mechanism.target_entity_id) || 'Unknown mechanism target';
+    addNode(sourceName, inferOntologyType(sourceName, 'MECHANISM_SOURCE'), { source: 'mechanism' });
+    addNode(targetName, inferOntologyType(targetName, 'MECHANISM_TARGET'), { source: 'mechanism' });
+  }
+
   for (const relationship of relationships) {
     const sourceName = relationship.source_entity || relationship.source || 'Unknown source';
     const targetName = relationship.target_entity || relationship.target || 'Unknown target';
@@ -634,18 +675,53 @@ function buildKnowledgeBaseGraph(records = {}) {
     };
   });
 
+  const canonicalEdges = [
+    ...propositions.map((proposition, index) => ({
+      id: `proposition:${proposition.id || index + 1}`,
+      source: `node:${normalizeGraphKey(proposition.subject_text || entityLabelsById.get(proposition.subject_entity_id) || 'Unknown subject')}`,
+      target: `node:${normalizeGraphKey(proposition.object_text || entityLabelsById.get(proposition.object_entity_id) || 'Unknown object')}`,
+      type: String(proposition.predicate || 'ASSERTS').toUpperCase(),
+      weight: 0.8,
+      attributes: { source: 'proposition', context_id: proposition.context_id },
+      evidence: proposition.attributes || {}
+    })),
+    ...mechanisms.map((mechanism, index) => ({
+      id: `mechanism:${mechanism.id || index + 1}`,
+      source: `node:${normalizeGraphKey(entityLabelsById.get(mechanism.source_entity_id) || 'Unknown mechanism source')}`,
+      target: `node:${normalizeGraphKey(entityLabelsById.get(mechanism.target_entity_id) || 'Unknown mechanism target')}`,
+      type: String(mechanism.mechanism_type || 'MECHANISM').toUpperCase(),
+      weight: mechanism.strength || mechanism.confidence || 0.7,
+      attributes: { ...mechanism.attributes, context_id: mechanism.context_id, polarity: mechanism.polarity, certainty: mechanism.certainty },
+      evidence: mechanism.attributes || {}
+    })),
+    ...events.map((event, index) => ({
+      id: `event:${event.id || index + 1}`,
+      source: `node:${normalizeGraphKey(entityLabelsById.get(event.subject_entity_id) || 'Unknown event subject')}`,
+      target: `node:${normalizeGraphKey(entityLabelsById.get(event.object_entity_id) || 'Unknown event object')}`,
+      type: String(event.event_type || 'EVENT').toUpperCase(),
+      weight: 0.8,
+      attributes: event.attributes || {},
+      evidence: event.attributes || {}
+    }))
+  ];
+
   return {
     schemaVersion: '1.0',
     title: 'C3 system knowledge base',
     description: 'Canonical graph-ready knowledge layer for AI reasoning and system mapping.',
     nodes,
-    edges,
+    edges: [...edges, ...canonicalEdges],
     summary: {
       nodeCount: nodes.length,
-      edgeCount: edges.length,
+      edgeCount: edges.length + canonicalEdges.length,
       claimCount: claims.length,
       observationCount: observations.length,
       relationshipCount: relationships.length,
+      propositionCount: propositions.length,
+      stateCount: states.length,
+      eventCount: events.length,
+      ruleCount: rules.length,
+      mechanismCount: mechanisms.length,
       sourceCount: sources.length
     }
   };

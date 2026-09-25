@@ -51,6 +51,7 @@ This MVP establishes the durable information foundation for ingesting source doc
 - Takes canonical records and packages them into a graph-ready, compact context layer.
 - Produces entity, relationship, observation, and summary bundles that are easier for AI systems to reason over.
 - Keeps the raw source and the derived graph separated, so the system remains auditable.
+- Uses the canonical proposition and mechanism resolution layer to connect repeated, qualified, and conflicting information across uploads.
 
 ### 9. Simulation / 3D system map layer
 - Uses the knowledge base to reconstruct systems, dependencies, flows, outcomes, and bottlenecks.
@@ -81,6 +82,13 @@ RAW SOURCE
 - Extracted rules, events, and mechanisms have candidate status until assessed.
 - Context is attached before comparing assertions; jurisdiction, population, and time mismatches are not automatic contradictions.
 - Evidence and provenance remain attached to canonical objects even when those objects are projected into a graph.
+
+## Merge invariants
+- New extraction rows are never deleted or overwritten during resolution.
+- Exact fingerprints produce `SAME_AS` links to an existing canonical representative.
+- Shared subject/predicate with a changed context produces `QUALIFIED_BY`; changed objects produce candidate `CONFLICTS`.
+- Mechanisms use the same representative-and-resolution pattern.
+- The knowledge graph is generated from canonical propositions, states, events, rules, mechanisms, entities, and legacy compatibility records.
 
 ## Long-term objective
 The system is not meant to be a website that simply stores parsed data. It is meant to become an operational knowledge foundation for a larger AI-driven model of the United States' systems: sources become evidence, the parser becomes the ingestion layer, the canonical graph becomes the system map, and the AI knowledge base becomes the reasoning layer that powers interactive 3D visualization and systems optimization.
