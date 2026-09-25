@@ -1,0 +1,27 @@
+{
+  "name": "c3-info-foundation",
+  "version": "1.0.0",
+  "description": "C3 Universal Information Foundation MVP",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "c3",
+    "information-foundation",
+    "knowledge-graph",
+    "mvp"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "cheerio": "^1.2.0",
+    "csv-parse": "^7.0.2",
+    "express": "^5.2.1",
+    "multer": "^2.4.0",
+    "pdf-parse": "^2.4.5"
+  }
+}

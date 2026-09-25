@@ -1,0 +1,533 @@
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const pdfParseModule = require('pdf-parse');
+const pdfParse = pdfParseModule.default || pdfParseModule;
+const cheerio = require('cheerio');
+const { parse } = require('csv-parse/sync');
+
+function normalizeWhitespace(value = '') {
+  return String(value).replace(/\r/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function splitIntoParagraphs(text = '') {
+  return String(text)
+    .replace(/\r/g, '')
+    .split(/\n\s*\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function titleFromText(text, fallback = 'Untitled source') {
+  const match = String(text).match(/^#\s*(.+)$/m);
+  if (match) return match[1].trim();
+  const firstLine = String(text).split(/\n+/).map((line) => line.trim()).find(Boolean);
+  if (firstLine) return firstLine.slice(0, 160);
+  return fallback;
+}
+
+function cleanText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function extractJsonSections(value, prefix = 'root') {
+  if (Array.isArray(value)) {
+    return value.map((item, index) => ({
+      title: `${prefix}[${index}]`,
+      content: typeof item === 'string' ? item : JSON.stringify(item),
+      type: 'json-array-item'
+    }));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.entries(value).map(([key, item]) => ({
+      title: key,
+      content: typeof item === 'string' ? item : JSON.stringify(item),
+      type: 'json-field'
+    }));
+  }
+
+  return [{ title: prefix, content: String(value || ''), type: 'json-scalar' }];
+}
+
+function parseContent(mimeType, rawText, sourceTitle = 'Document') {
+  const type = String(mimeType || '').toLowerCase().split(';')[0];
+  const text = Buffer.isBuffer(rawText) ? rawText.toString('utf8') : String(rawText || '');
+
+  if (type.includes('html')) {
+    const $ = cheerio.load(text);
+    const title = $('title').first().text() || $('h1').first().text() || sourceTitle;
+    const sections = [];
+    $('h1, h2, h3, p, li').each((index, element) => {
+      const content = cleanText($(element).text());
+      if (!content) return;
+      sections.push({ title: $(element).get(0).tagName.toUpperCase(), content, type: 'html-section' });
+    });
+    const paragraphs = $('body')
+      .text()
+      .split(/\s*\n\s*\n+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    return {
+      title,
+      mimeType: type,
+      text: $('body').text(),
+      sections: sections.length ? sections : [{ title: 'body', content: $('body').text(), type: 'html-body' }],
+      chunks: paragraphs.length ? paragraphs.map((part, index) => ({ sequence: index + 1, content: part, location_metadata: { type: 'html-text' } })) : [{ sequence: 1, content: $('body').text(), location_metadata: { type: 'html-text' } }],
+      sourceType: 'html'
+    };
+  }
+
+  if (type.includes('json')) {
+    const value = safeJsonParse(text) || {};
+    const compact = JSON.stringify(value, null, 2);
+    const sections = extractJsonSections(value, 'document');
+    return {
+      title: sourceTitle,
+      mimeType: type,
+      text: compact,
+      sections,
+      chunks: [{ sequence: 1, content: compact, location_metadata: { type: 'json' } }],
+      sourceType: 'json'
+    };
+  }
+
+  if (type.includes('csv')) {
+    const rows = parse(text, { columns: true, skip_empty_lines: true });
+    const content = rows.length ? rows.map((row) => JSON.stringify(row)).join('\n') : text;
+    return {
+      title: sourceTitle,
+      mimeType: type,
+      text: content,
+      sections: rows.length ? [{ title: 'table_rows', content: JSON.stringify(rows.slice(0, 10)), type: 'csv-table' }] : [{ title: 'csv', content: text, type: 'csv-text' }],
+      chunks: [{ sequence: 1, content, location_metadata: { type: 'csv' } }],
+      sourceType: 'csv'
+    };
+  }
+
+  if (type.includes('markdown') || type.includes('text') || type.includes('plain')) {
+    const normalized = text.replace(/\r/g, '');
+    const paragraphs = splitIntoParagraphs(normalized);
+    const sections = paragraphs.map((paragraph, index) => ({
+      title: `section_${index + 1}`,
+      content: paragraph,
+      type: 'text-paragraph'
+    }));
+    const content = paragraphs.join('\n\n');
+    const title = titleFromText(normalized, sourceTitle);
+    return {
+      title,
+      mimeType: type,
+      text: content,
+      sections: sections.length ? sections : [{ title: 'body', content: normalized, type: 'text-body' }],
+      chunks: paragraphs.length ? paragraphs.map((part, index) => ({ sequence: index + 1, content: part, location_metadata: { type: 'text' } })) : [{ sequence: 1, content: content, location_metadata: { type: 'text' } }],
+      sourceType: 'text'
+    };
+  }
+
+  const paragraphs = splitIntoParagraphs(text);
+  const title = titleFromText(text, sourceTitle);
+  return {
+    title,
+    mimeType: type,
+    text,
+    sections: paragraphs.length ? paragraphs.map((part, index) => ({ title: `section_${index + 1}`, content: part, type: 'generic-section' })) : [{ title: 'body', content: text, type: 'generic-body' }],
+    chunks: paragraphs.length ? paragraphs.map((part, index) => ({ sequence: index + 1, content: part, location_metadata: { type: 'generic' } })) : [{ sequence: 1, content: text, location_metadata: { type: 'generic' } }],
+    sourceType: 'generic'
+  };
+}
+
+async function parseUploadedContent(fileBuffer, mimeType, sourceTitle = 'Document') {
+  const type = String(mimeType || '').toLowerCase().split(';')[0];
+
+  if (type.includes('pdf')) {
+    const parsed = await pdfParse(fileBuffer);
+    const text = parsed.text || '';
+    const paragraphs = splitIntoParagraphs(text);
+    return {
+      title: titleFromText(text, sourceTitle),
+      mimeType: type,
+      text,
+      sections: paragraphs.length ? paragraphs.map((part, index) => ({ title: `pdf_section_${index + 1}`, content: part, type: 'pdf-section' })) : [{ title: 'pdf_body', content: text, type: 'pdf-body' }],
+      chunks: paragraphs.map((part, index) => ({ sequence: index + 1, content: part, location_metadata: { page: index + 1, type: 'pdf' } })),
+      sourceType: 'pdf'
+    };
+  }
+
+  const text = fileBuffer.toString('utf8');
+  return parseContent(type || 'text/plain', text, sourceTitle);
+}
+
+async function parseDocument(fileBuffer, mimeType, sourceTitle = 'Document') {
+  const type = String(mimeType || '').toLowerCase().split(';')[0];
+  const parsed = await parseUploadedContent(fileBuffer, mimeType, sourceTitle);
+  const structured = extractStructuredContent(parsed.text);
+  return {
+    ...parsed,
+    entities: structured.entities,
+    claims: structured.claims,
+    observations: structured.observations,
+    relationships: structured.relationships,
+    summary: parsed.text.slice(0, 280) || 'No summary available.',
+    graph: {
+      entities: structured.entities,
+      relationships: structured.relationships,
+      observations: structured.observations
+    }
+  };
+}
+
+function dedupeList(items, keyFn) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = String(keyFn(item) || '').trim().toLowerCase();
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function extractStructuredContent(documentText) {
+  const text = String(documentText || '');
+  const entityNames = new Set();
+  const relationships = [];
+  const claims = [];
+  const observations = [];
+
+  const jsonValue = safeJsonParse(text);
+  const relationshipKeyMap = {
+    affects: 'AFFECTS',
+    dependson: 'DEPENDS_ON',
+    depends_on: 'DEPENDS_ON',
+    relieson: 'RELIES_ON',
+    relies_on: 'RELIES_ON',
+    supports: 'SUPPORTS',
+    interactswith: 'INTERACTS_WITH',
+    interacts_with: 'INTERACTS_WITH',
+    requires: 'REQUIRES'
+  };
+
+  function addStructuredRelationship(sourceName, key, targetValue) {
+    const cleanSource = String(sourceName || '').trim();
+    const cleanTarget = String(targetValue || '').trim();
+    if (!cleanSource || !cleanTarget) return;
+    const normalizedKey = String(key || '').replace(/[^a-z_]/gi, '').toLowerCase();
+    const relType = relationshipKeyMap[normalizedKey] || normalizedKey.toUpperCase();
+    relationships.push({
+      relationship_type: relType,
+      source_entity: cleanSource,
+      target_entity: cleanTarget,
+      attributes: { source: 'structured-json' }
+    });
+  }
+
+  function visitStructuredObject(value, parentName = 'root') {
+    if (!value || typeof value !== 'object') return;
+
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visitStructuredObject(item, `${parentName}[${index}]`));
+      return;
+    }
+
+    const recordName = value.name || value.title || value.label || value.id || value.entity || parentName;
+    if (recordName && typeof recordName === 'string') {
+      entityNames.add(recordName.trim());
+    }
+
+    for (const [key, itemValue] of Object.entries(value)) {
+      const normalizedKey = String(key).replace(/[^a-z_]/gi, '').toLowerCase();
+      const keyName = String(key).trim();
+
+      if (typeof itemValue === 'string' && keyName && (normalizedKey === 'affects' || normalizedKey === 'depends_on' || normalizedKey === 'relies_on' || normalizedKey === 'supports' || normalizedKey === 'requires' || normalizedKey === 'interacts_with')) {
+        addStructuredRelationship(recordName || parentName, keyName, itemValue);
+      }
+
+      if (typeof itemValue === 'object' && itemValue !== null) {
+        visitStructuredObject(itemValue, recordName || keyName);
+      }
+    }
+  }
+
+  if (jsonValue && typeof jsonValue === 'object') {
+    visitStructuredObject(jsonValue, 'document');
+  }
+
+  const entityCandidates = [
+    ...(text.match(/(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/g) || []),
+    ...(text.match(/(?:Child Support Program|Court Systems|Unemployment|families|poverty|program)/gi) || []),
+    ...(text.match(/(?:[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){1,3})/g) || [])
+  ];
+
+  for (const candidate of entityCandidates) {
+    const clean = candidate.trim();
+    if (clean.length > 1) {
+      entityNames.add(clean.toLowerCase());
+    }
+  }
+
+  const entities = dedupeList([...entityNames].map((entry) => {
+    const label = entry.replace(/\s+/g, ' ').trim();
+    const canonical = label.charAt(0).toUpperCase() + label.slice(1);
+    const type = /program|agency|service/i.test(label) ? 'PROGRAM' : /court|system|policy|law/i.test(label) ? 'SYSTEM' : /unemployment|poverty|income|family/i.test(label) ? 'MEASUREMENT' : 'ENTITY';
+    return { type, canonical_name: canonical, attributes: { source: 'heuristic' } };
+  }), (entity) => `${entity.type}|${entity.canonical_name}`);
+
+  const sentenceMatches = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+  for (const sentence of sentenceMatches) {
+    const normalizedSentence = sentence.trim();
+    if (!normalizedSentence) continue;
+
+    const claimPatterns = [
+      /(.*?)(?:reduces|increases|affects|improves|supports|changes)\s+(.+)/i,
+      /(.*?)(?:depends on|relies on|interacts with)\s+(.+)/i
+    ];
+
+    for (const pattern of claimPatterns) {
+      const match = normalizedSentence.match(pattern);
+      if (match) {
+        const subject = match[1].replace(/^(?:The|A|An)\s+/i, '').trim() || 'Unknown subject';
+        const predicate = (match[0].match(/(?:reduces|increases|affects|improves|supports|changes|depends on|relies on|interacts with)/i) || [])[0] || 'RELATES_TO';
+        const object = match[2].trim() || 'Unknown object';
+        claims.push({ claim_type: 'claim', subject, predicate, object, attributes: { source_sentence: normalizedSentence } });
+      }
+    }
+
+    const percentMatch = normalizedSentence.match(/(\d+(?:\.\d+)?)\s*%/);
+    if (percentMatch) {
+      const value = percentMatch[1];
+      const subject = normalizedSentence.replace(percentMatch[0], '').replace(/^(?:The|A|An)\s+/i, '').trim() || 'Unknown subject';
+      observations.push({ observation_type: 'statistic', subject, value, unit: '%', attributes: { source_sentence: normalizedSentence } });
+    }
+
+    const relationshipMatch = normalizedSentence.match(/(.+?)\s+(affects|depends on|interacts with|supports)\s+(.+)/i);
+    if (relationshipMatch) {
+      relationships.push({
+        relationship_type: relationshipMatch[2].toUpperCase().replace(/\s+/g, '_'),
+        source_entity: relationshipMatch[1].trim().replace(/^(?:The|A|An)\s+/i, ''),
+        target_entity: relationshipMatch[3].trim().replace(/[.]+$/, ''),
+        attributes: { source_sentence: normalizedSentence }
+      });
+    }
+  }
+
+  if (!claims.length) {
+    const generic = text.split(/(?<=[.!?])\s+/)[0];
+    if (generic) {
+      claims.push({ claim_type: 'claim', subject: 'Document', predicate: 'DESCRIBES', object: generic.slice(0, 160), attributes: { source_sentence: generic } });
+    }
+  }
+
+  if (!observations.length) {
+    const numeric = text.match(/(\d+(?:\.\d+)?(?:%|million|billion|thousand)?)/g) || [];
+    for (const value of numeric.slice(0, 2)) {
+      observations.push({ observation_type: 'statistic', subject: 'Document', value, unit: value.includes('%') ? '%' : 'measure', attributes: { source_text: text.slice(0, 160) } });
+    }
+  }
+
+  return {
+    entities: dedupeList(entities, (entity) => `${entity.type}|${entity.canonical_name}`),
+    claims: dedupeList(claims, (claim) => `${claim.subject}|${claim.predicate}|${claim.object}`),
+    observations: dedupeList(observations, (observation) => `${observation.subject}|${observation.value}|${observation.unit}`),
+    relationships: dedupeList(relationships, (relationship) => `${relationship.relationship_type}|${relationship.source_entity}|${relationship.target_entity}`)
+  };
+}
+
+function buildAiContextBundle(document) {
+  const base = document && typeof document === 'object' ? document : { title: 'Document', text: String(document || ''), sourceType: 'text' };
+  const text = String(base.text || '');
+  const structured = extractStructuredContent(text);
+  const entities = dedupeList([...(base.entities || []), ...structured.entities], (entity) => `${entity.type}|${entity.canonical_name}`);
+  const relationships = dedupeList([...(base.relationships || []), ...structured.relationships], (relationship) => `${relationship.relationship_type}|${relationship.source_entity}|${relationship.target_entity}`);
+  const observations = dedupeList([...(base.observations || []), ...structured.observations], (observation) => `${observation.subject}|${observation.value}|${observation.unit}`);
+  const summaryText = text ? text.slice(0, 220).replace(/\s+/g, ' ').trim() : 'No content available.';
+
+  return {
+    title: base.title || 'Untitled document',
+    sourceType: base.sourceType || 'text',
+    summary: summaryText,
+    compactContext: {
+      title: base.title || 'Untitled document',
+      type: base.sourceType || 'text',
+      summary: summaryText,
+      entities: entities.slice(0, 12).map((entity) => entity.canonical_name || entity.name || entity.type),
+      relationships: relationships.slice(0, 12).map((relationship) => ({
+        type: relationship.relationship_type,
+        from: relationship.source_entity,
+        to: relationship.target_entity
+      })),
+      observations: observations.slice(0, 8).map((observation) => ({
+        subject: observation.subject,
+        value: observation.value,
+        unit: observation.unit
+      }))
+    },
+    entities,
+    relationships,
+    observations,
+    claims: dedupeList([...(base.claims || []), ...structured.claims], (claim) => `${claim.subject}|${claim.predicate}|${claim.object}`)
+  };
+}
+
+function normalizeGraphKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120) || 'node';
+}
+
+function inferOntologyType(label, fallback = 'ENTITY') {
+  const value = String(label || '').trim();
+  if (!value) return fallback;
+  const text = value.toLowerCase();
+
+  if (/department|agency|commission|board|office|ministry|administration|authority|bureau/i.test(text)) {
+    return 'AGENCY';
+  }
+  if (/service|program|initiative|benefit|support|care|programs/i.test(text)) {
+    return 'SERVICE';
+  }
+  if (/policy|regulation|rule|law|mandate|statute|guideline/i.test(text)) {
+    return 'POLICY';
+  }
+  if (/family|families|children|workers|population|citizens|households|patients|veterans|students/i.test(text)) {
+    return 'POPULATION';
+  }
+  if (/state|county|city|district|region|country|california|texas|florida|new york|geography/i.test(text)) {
+    return 'GEOGRAPHY';
+  }
+  if (/outcome|impact|result|effect|benefit|risk|access|quality|cost/i.test(text)) {
+    return 'OUTCOME';
+  }
+  if (/dependency|depends on|requires|relies on|pathway|flow|connection|infrastructure/i.test(text)) {
+    return 'DEPENDENCY';
+  }
+  if (/system|network|platform|infrastructure|court|agency|department/i.test(text)) {
+    return 'SYSTEM';
+  }
+  if (/measure|metric|rate|percent|poverty|unemployment|income|employment|population/i.test(text)) {
+    return 'MEASUREMENT';
+  }
+  return fallback;
+}
+
+function buildKnowledgeBaseGraph(records = {}) {
+  const entities = Array.isArray(records.entities) ? records.entities : [];
+  const relationships = Array.isArray(records.relationships) ? records.relationships : [];
+  const claims = Array.isArray(records.claims) ? records.claims : [];
+  const observations = Array.isArray(records.observations) ? records.observations : [];
+  const sources = Array.isArray(records.sources) ? records.sources : [];
+
+  const nodeMap = new Map();
+
+  function addNode(name, kind = 'ENTITY', attributes = {}) {
+    const label = String(name || '').trim();
+    if (!label) return null;
+    const key = normalizeGraphKey(label);
+    const ontologyType = inferOntologyType(label, kind);
+    if (!nodeMap.has(key)) {
+      nodeMap.set(key, {
+        id: `node:${key}`,
+        label,
+        type: kind,
+        ontologyType,
+        aliases: [label],
+        attributes,
+        layer: 'knowledge-base'
+      });
+    } else {
+      const existing = nodeMap.get(key);
+      if (!existing.aliases.includes(label)) {
+        existing.aliases.push(label);
+      }
+      existing.type = kind || existing.type;
+      existing.ontologyType = ontologyType || existing.ontologyType;
+      if (Object.keys(attributes).length) {
+        existing.attributes = { ...existing.attributes, ...attributes };
+      }
+    }
+    return nodeMap.get(key);
+  }
+
+  for (const entity of entities) {
+    const label = entity.canonical_name || entity.name || entity.label || entity.type || 'Unknown entity';
+    const inferredType = entity.type || inferOntologyType(label, 'ENTITY');
+    addNode(label, inferredType, entity.attributes || {});
+  }
+
+  for (const relationship of relationships) {
+    const sourceName = relationship.source_entity || relationship.source || 'Unknown source';
+    const targetName = relationship.target_entity || relationship.target || 'Unknown target';
+    addNode(sourceName, inferOntologyType(sourceName, 'ENTITY'), { source: 'relationship' });
+    addNode(targetName, inferOntologyType(targetName, 'ENTITY'), { source: 'relationship' });
+  }
+
+  for (const claim of claims) {
+    addNode(claim.subject || 'Unknown subject', inferOntologyType(claim.subject || 'Unknown subject', 'CLAIM_SUBJECT'), { source: 'claim' });
+    addNode(claim.object || 'Unknown object', inferOntologyType(claim.object || 'Unknown object', 'CLAIM_OBJECT'), { source: 'claim' });
+  }
+
+  for (const observation of observations) {
+    addNode(observation.subject || 'Unknown subject', inferOntologyType(observation.subject || 'Unknown subject', 'OBSERVATION_SUBJECT'), { source: 'observation' });
+  }
+
+  const nodes = [...nodeMap.values()];
+
+  const edges = relationships.map((relationship, index) => {
+    const sourceName = relationship.source_entity || relationship.source || 'Unknown source';
+    const targetName = relationship.target_entity || relationship.target || 'Unknown target';
+    const sourceId = `node:${normalizeGraphKey(sourceName)}`;
+    const targetId = `node:${normalizeGraphKey(targetName)}`;
+    return {
+      id: `edge:${index + 1}`,
+      source: sourceId,
+      target: targetId,
+      type: String(relationship.relationship_type || relationship.type || 'RELATES_TO').toUpperCase(),
+      weight: 0.7,
+      attributes: relationship.attributes || {},
+      evidence: [relationship.source_sentence || relationship.attributes || {}]
+    };
+  });
+
+  return {
+    schemaVersion: '1.0',
+    title: 'C3 system knowledge base',
+    description: 'Canonical graph-ready knowledge layer for AI reasoning and system mapping.',
+    nodes,
+    edges,
+    summary: {
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      claimCount: claims.length,
+      observationCount: observations.length,
+      relationshipCount: relationships.length,
+      sourceCount: sources.length
+    }
+  };
+}
+
+function hashContent(content) {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+module.exports = {
+  parseContent,
+  parseUploadedContent,
+  parseDocument,
+  buildAiContextBundle,
+  buildKnowledgeBaseGraph,
+  extractStructuredContent,
+  hashContent,
+  normalizeWhitespace,
+  splitIntoParagraphs
+};

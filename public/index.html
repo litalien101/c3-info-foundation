@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>C3 Universal Information Foundation</title>
+    <style>
+      :root {
+        --bg: #f5f7fb;
+        --bg-strong: #eef2f9;
+        --panel: rgba(255, 255, 255, 0.76);
+        --panel-strong: #ffffff;
+        --panel-alt: #f8faff;
+        --text: #111827;
+        --muted: #5f6b7a;
+        --accent: #4d9ef7;
+        --accent-strong: #2d7ff9;
+        --accent-soft: rgba(77, 158, 247, 0.12);
+        --good: #1eb980;
+        --border: rgba(15, 23, 42, 0.08);
+        --shadow: 0 18px 50px rgba(17, 24, 39, 0.08);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(153, 214, 255, 0.4), transparent 40%),
+          linear-gradient(180deg, var(--bg) 0%, var(--bg-strong) 100%);
+        color: var(--text);
+        font-family: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .container {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 38px 20px 70px;
+      }
+
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 28px;
+      }
+
+      h1 {
+        margin: 10px 0 0;
+        font-size: clamp(2.1rem, 3vw, 3.1rem);
+        line-height: 1.05;
+        letter-spacing: -0.06em;
+        font-weight: 700;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 7px 12px;
+        color: var(--accent-strong);
+        font-size: 0.76rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        box-shadow: 0 5px 16px rgba(45, 127, 249, 0.08);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 22px;
+      }
+
+      .panel {
+        background: var(--panel);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        border: 1px solid rgba(255, 255, 255, 0.7);
+        border-radius: 26px;
+        padding: 26px;
+        box-shadow: var(--shadow);
+      }
+
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 1.15rem;
+        letter-spacing: -0.03em;
+      }
+
+      form {
+        display: grid;
+        gap: 14px;
+      }
+
+      input[type="file"], input[type="text"] {
+        width: 100%;
+        padding: 15px 16px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.7);
+        color: var(--text);
+        font-size: 1rem;
+        transition: all 0.2s ease;
+      }
+
+      input[type="file"]::file-selector-button {
+        margin-right: 12px;
+        border: none;
+        border-radius: 10px;
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+        padding: 10px 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      input[type="file"]:focus, input[type="text"]:focus {
+        border-color: rgba(77, 158, 247, 0.5);
+        box-shadow: 0 0 0 4px rgba(77, 158, 247, 0.08);
+        outline: none;
+      }
+
+      button {
+        border: none;
+        border-radius: 14px;
+        padding: 14px 18px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+        color: white;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        cursor: pointer;
+        box-shadow: 0 12px 20px rgba(45, 127, 249, 0.18);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 14px 24px rgba(45, 127, 249, 0.24);
+      }
+
+      .output {
+        margin-top: 18px;
+        background: rgba(248, 250, 255, 0.9);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px 16px;
+        white-space: pre-wrap;
+        overflow: auto;
+        max-height: 360px;
+        color: var(--muted);
+        font-size: 0.88rem;
+        line-height: 1.5;
+      }
+
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 18px;
+        margin-top: 24px;
+      }
+
+      .stat {
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        padding: 18px 18px 16px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.04);
+      }
+
+      .stat span {
+        display: block;
+        color: var(--muted);
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .stat strong {
+        display: block;
+        font-size: clamp(1.8rem, 2.2vw, 2.3rem);
+        margin-top: 12px;
+        letter-spacing: -0.06em;
+      }
+
+      .flex { display: flex; gap: 12px; flex-wrap: wrap; }
+      .search-box { width: 100%; }
+
+      .record-list {
+        display: grid;
+        gap: 12px;
+        margin-top: 12px;
+      }
+
+      .record {
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.6);
+        padding: 14px 16px;
+      }
+
+      .tag {
+        display: inline-block;
+        font-size: 0.68rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--good);
+        border: 1px solid rgba(30, 185, 128, 0.15);
+        background: rgba(30, 185, 128, 0.08);
+        border-radius: 999px;
+        padding: 6px 8px;
+        margin-bottom: 10px;
+        font-weight: 700;
+      }
+
+      @media (max-width: 900px) {
+        .grid { grid-template-columns: 1fr; }
+        .container { padding-top: 24px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div>
+          <div class="badge">C3 Information Foundation</div>
+          <h1>MVP Knowledge Ingestion</h1>
+        </div>
+      </header>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>Upload source artifact</h2>
+          <form id="upload-form" enctype="multipart/form-data">
+            <input type="file" name="file" id="file" accept=".pdf,.html,.txt,.csv,.json,.md,.markdown" required />
+            <button type="submit">Import source</button>
+          </form>
+          <div id="upload-output" class="output">Upload status will appear here.</div>
+        </section>
+
+        <aside class="panel">
+          <h2>Search</h2>
+          <div class="flex">
+            <input class="search-box" id="search-input" type="text" placeholder="Search entities, claims, observations..." />
+            <button id="search-button" type="button">Search</button>
+          </div>
+          <div id="search-output" class="output">Search results will appear here.</div>
+        </aside>
+      </div>
+
+      <section class="panel" style="margin-top: 22px;">
+        <h2>AI-ready context</h2>
+        <div id="context-output" class="output">The compact graph summary will appear here after upload.</div>
+      </section>
+
+      <div class="cards">
+        <div class="stat"><span>Sources</span><strong id="source-count">0</strong></div>
+        <div class="stat"><span>Artifacts</span><strong id="artifact-count">0</strong></div>
+        <div class="stat"><span>Entities</span><strong id="entity-count">0</strong></div>
+        <div class="stat"><span>Claims</span><strong id="claim-count">0</strong></div>
+      </div>
+
+      <section class="panel" style="margin-top: 28px;">
+        <h2>Extracted records</h2>
+        <div id="record-list" class="record-list"></div>
+      </section>
+    </div>
+
+    <script>
+      async function loadRecords() {
+        const res = await fetch('/api/records');
+        const data = await res.json();
+        const sourceCount = document.getElementById('source-count');
+        const artifactCount = document.getElementById('artifact-count');
+        const entityCount = document.getElementById('entity-count');
+        const claimCount = document.getElementById('claim-count');
+        const recordList = document.getElementById('record-list');
+
+        const sources = data.sources || [];
+        const entities = data.entities || [];
+        const claims = data.claims || [];
+
+        sourceCount.textContent = String(sources.length);
+        artifactCount.textContent = String((data.artifacts || []).length);
+        entityCount.textContent = String(entities.length);
+        claimCount.textContent = String(claims.length);
+
+        const combined = [
+          ...entities.map((entity) => ({ type: 'Entity', label: entity.canonical_name || 'Untitled entity', detail: entity.type || 'ENTITY' })),
+          ...claims.map((claim) => ({ type: 'Claim', label: claim.subject || 'Unknown subject', detail: `${claim.predicate || 'RELATES_TO'} ${claim.object || ''}` })),
+        ];
+
+        recordList.innerHTML = combined.length
+          ? combined.slice(0, 20).map((record) => `
+            <div class="record">
+              <div class="tag">${record.type}</div>
+              <div><strong>${record.label}</strong></div>
+              <div>${record.detail}</div>
+            </div>
+          `).join('')
+          : '<div class="record">No extracted records yet.</div>';
+      }
+
+      function renderAiContext(payload) {
+        const contextOutput = document.getElementById('context-output');
+        const aiContext = payload && payload.aiContext ? payload.aiContext : null;
+
+        if (!aiContext) {
+          contextOutput.textContent = 'No AI-ready context available yet.';
+          return;
+        }
+
+        const compact = aiContext.compactContext || {};
+        contextOutput.textContent = JSON.stringify({
+          title: aiContext.title,
+          summary: aiContext.summary,
+          sourceType: aiContext.sourceType,
+          compactContext: compact
+        }, null, 2);
+      }
+
+      document.getElementById('upload-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const formData = new FormData(form);
+        const output = document.getElementById('upload-output');
+        output.textContent = 'Uploading and processing…';
+
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData
+        });
+        const payload = await res.json();
+        output.textContent = JSON.stringify(payload, null, 2);
+        renderAiContext(payload);
+        form.reset();
+        loadRecords();
+      });
+
+      document.getElementById('search-button').addEventListener('click', async () => {
+        const value = document.getElementById('search-input').value.trim();
+        const res = await fetch(`/api/records?q=${encodeURIComponent(value)}`);
+        const payload = await res.json();
+        const results = [
+          ...(payload.entities || []).slice(0, 5),
+          ...(payload.claims || []).slice(0, 5)
+        ];
+        document.getElementById('search-output').textContent = JSON.stringify(results, null, 2) || 'No results';
+      });
+
+      loadRecords();
+    </script>
+  </body>
+</html>
