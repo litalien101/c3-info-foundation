@@ -22,24 +22,34 @@ This MVP establishes the durable information foundation for ingesting source doc
 ### 4. Extraction
 - Uses a deterministic heuristic extraction layer to create entities, claims, observations, and relationships.
 - Stores extraction metadata including processing and schema version.
+- Treats heuristic output as candidate information, not verified truth.
+- Creates source assertions and unassessed assessments so later sources can support, contradict, review, or supersede an assertion.
 - Generates structured, queryable output while preserving evidence links.
 
 ### 5. Canonical storage
 - Uses SQLite as the initial relational storage layer.
 - Stores source, artifact, content, extraction, and evidence records.
+- Separates canonical entities from document-level mentions and aliases.
+- Stores data-backed entity types, relationship types, domains, jurisdictions, temporal scopes, and taxonomies.
+- Keeps claims, relationships, and assertions independently traceable to their provenance.
 - Supports future migration to PostgreSQL without changing the canonical design.
 
-### 6. AI knowledge base layer
+### 6. Assessment and disagreement layer
+- Records assessments separately from source assertions.
+- Preserves competing assertions and explicit `SUPPORTS` or `CONTRADICTS` relations without forcing an early truth decision.
+- Keeps review, confidence, rationale, and revision metadata available for human or downstream evaluation.
+
+### 7. AI knowledge base layer
 - Takes canonical records and packages them into a graph-ready, compact context layer.
 - Produces entity, relationship, observation, and summary bundles that are easier for AI systems to reason over.
 - Keeps the raw source and the derived graph separated, so the system remains auditable.
 
-### 7. Simulation / 3D system map layer
+### 8. Simulation / 3D system map layer
 - Uses the knowledge base to reconstruct systems, dependencies, flows, outcomes, and bottlenecks.
 - Maps public systems, services, agencies, regulations, and effects into a 3D or graph-like operational model.
 - Enables scenario testing and improvement analysis before real-world changes are implemented.
 
-### 8. Decision layer
+### 9. Decision layer
 - Compares the current system state to alternative configurations.
 - Scores the likely impact of interventions using the extracted structure, evidence, and system relationships.
 - Produces recommendation outputs that can feed back into operational planning.

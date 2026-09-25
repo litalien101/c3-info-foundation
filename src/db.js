@@ -122,6 +122,49 @@ db.exec(`
     FOREIGN KEY (extraction_id) REFERENCES extractions(id)
   );
 
+  CREATE TABLE IF NOT EXISTS source_assertions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL,
+    artifact_id INTEGER,
+    extraction_id INTEGER,
+    claim_id INTEGER,
+    assertion_type TEXT NOT NULL DEFAULT 'source_assertion',
+    subject TEXT,
+    predicate TEXT,
+    object TEXT,
+    assertion_text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unassessed',
+    attributes TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_id) REFERENCES sources(id),
+    FOREIGN KEY (artifact_id) REFERENCES raw_artifacts(id),
+    FOREIGN KEY (extraction_id) REFERENCES extractions(id),
+    FOREIGN KEY (claim_id) REFERENCES claims(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS assessments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_type TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    confidence REAL,
+    rationale TEXT,
+    reviewer TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    metadata TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS assertion_relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_assertion_id INTEGER NOT NULL,
+    target_assertion_id INTEGER NOT NULL,
+    relation_type TEXT NOT NULL,
+    metadata TEXT,
+    UNIQUE (source_assertion_id, target_assertion_id, relation_type),
+    FOREIGN KEY (source_assertion_id) REFERENCES source_assertions(id),
+    FOREIGN KEY (target_assertion_id) REFERENCES source_assertions(id)
+  );
+
   CREATE TABLE IF NOT EXISTS observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     extraction_id INTEGER,
@@ -312,6 +355,60 @@ function deserializeRows(rows, fields = []) {
   });
 }
 
+function seedOntologyDefinitions() {
+  const insertDomain = db.prepare(`
+    INSERT INTO domains (name, description, metadata)
+    VALUES (@name, @description, @metadata)
+    ON CONFLICT(name) DO UPDATE SET description = excluded.description
+  `);
+  insertDomain.run({
+    name: 'C3 Core',
+    description: 'Cross-domain types and predicates shared by the C3 information foundation.',
+    metadata: serializeMetadata({ managed: true })
+  });
+  const domainRow = db.prepare('SELECT * FROM domains WHERE name = ?').get('C3 Core');
+
+  const entityTypes = [
+    ['Entity', null], ['Person', 'Entity'], ['Organization', 'Entity'], ['Agency', 'Organization'],
+    ['Company', 'Organization'], ['Program', 'Entity'], ['Institution', 'Organization'], ['Court', 'Institution'],
+    ['Government', 'Organization'], ['Population', 'Entity'], ['Rule', 'Entity'], ['Law', 'Rule'],
+    ['Regulation', 'Rule'], ['Policy', 'Rule'], ['Requirement', 'Rule'], ['Procedure', 'Rule'],
+    ['Process', 'Entity'], ['Workflow', 'Process'], ['Decision', 'Process'], ['Resource', 'Entity'],
+    ['Service', 'Resource'], ['Measurement', 'Entity'], ['Statistic', 'Measurement'], ['Outcome', 'Measurement'],
+    ['Event', 'Entity'], ['Place', 'Entity'], ['Jurisdiction', 'Place']
+  ];
+  const insertEntityType = db.prepare(`
+    INSERT INTO entity_types (domain_id, name, parent_type_id, metadata)
+    VALUES (@domain_id, @name, @parent_type_id, @metadata)
+    ON CONFLICT(domain_id, name) DO UPDATE SET parent_type_id = excluded.parent_type_id
+  `);
+  for (const [name, parentName] of entityTypes) {
+    const parent = parentName ? db.prepare('SELECT id FROM entity_types WHERE domain_id = ? AND name = ?').get(domainRow.id, parentName) : null;
+    insertEntityType.run({ domain_id: domainRow.id, name, parent_type_id: parent ? parent.id : null, metadata: serializeMetadata({ managed: true }) });
+  }
+
+  const relationshipTypes = [
+    ['ADMINISTERS', 'ADMINISTERED_BY'], ['FUNDS', 'FUNDED_BY'], ['REGULATES', 'REGULATED_BY'],
+    ['GOVERNS', 'GOVERNED_BY'], ['REQUIRES', 'REQUIRED_BY'], ['DEPENDS_ON', 'REQUIRED_BY'],
+    ['ELIGIBLE_FOR', 'HAS_ELIGIBILITY'], ['SERVES', 'SERVED_BY'], ['AFFECTS', 'AFFECTED_BY'],
+    ['LOCATED_IN', 'CONTAINS'], ['OPERATES_IN', 'HOSTS'], ['CREATED_BY', 'CREATES'],
+    ['AUTHORIZED_BY', 'AUTHORIZES'], ['SUPERSEDES', 'SUPERSEDED_BY'], ['AMENDS', 'AMENDED_BY'],
+    ['IMPLEMENTS', 'IMPLEMENTED_BY'], ['ENFORCES', 'ENFORCED_BY'], ['REPORTS', 'REPORTED_BY'],
+    ['MEASURES', 'MEASURED_BY'], ['CAUSES', 'CAUSED_BY'], ['CORRELATES_WITH', 'CORRELATES_WITH'],
+    ['CONTRADICTS', 'CONTRADICTS'], ['SUPPORTS', 'SUPPORTED_BY']
+  ];
+  const insertRelationshipType = db.prepare(`
+    INSERT INTO relationship_types (domain_id, name, inverse_name, metadata)
+    VALUES (@domain_id, @name, @inverse_name, @metadata)
+    ON CONFLICT(domain_id, name) DO UPDATE SET inverse_name = excluded.inverse_name
+  `);
+  for (const [name, inverseName] of relationshipTypes) {
+    insertRelationshipType.run({ domain_id: domainRow.id, name, inverse_name: inverseName, metadata: serializeMetadata({ managed: true }) });
+  }
+}
+
+seedOntologyDefinitions();
+
 function insertSource({ type, uri, title, publisher = null, published_at = null, retrieved_at = null, metadata = {} }) {
   const stmt = db.prepare(`
     INSERT INTO sources (type, uri, title, publisher, published_at, retrieved_at, metadata)
@@ -472,6 +569,54 @@ function insertClaim({ extraction_id, claim_type = 'claim', subject, predicate, 
   return db.prepare('SELECT * FROM claims WHERE id = ?').get(result.lastInsertRowid);
 }
 
+function insertSourceAssertion({ source_id, artifact_id = null, extraction_id = null, claim_id = null, assertion_type = 'source_assertion', subject = null, predicate = null, object = null, assertion_text, status = 'unassessed', attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO source_assertions (source_id, artifact_id, extraction_id, claim_id, assertion_type, subject, predicate, object, assertion_text, status, attributes)
+    VALUES (@source_id, @artifact_id, @extraction_id, @claim_id, @assertion_type, @subject, @predicate, @object, @assertion_text, @status, @attributes)
+  `);
+  const result = stmt.run({
+    source_id,
+    artifact_id,
+    extraction_id,
+    claim_id,
+    assertion_type,
+    subject,
+    predicate,
+    object,
+    assertion_text,
+    status,
+    attributes: serializeMetadata(attributes)
+  });
+  return db.prepare('SELECT * FROM source_assertions WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertAssessment({ target_type, target_id, status, confidence = null, rationale = null, reviewer = null, metadata = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO assessments (target_type, target_id, status, confidence, rationale, reviewer, metadata)
+    VALUES (@target_type, @target_id, @status, @confidence, @rationale, @reviewer, @metadata)
+  `);
+  const result = stmt.run({
+    target_type,
+    target_id,
+    status,
+    confidence,
+    rationale,
+    reviewer,
+    metadata: serializeMetadata(metadata)
+  });
+  return db.prepare('SELECT * FROM assessments WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertAssertionRelation({ source_assertion_id, target_assertion_id, relation_type, metadata = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO assertion_relations (source_assertion_id, target_assertion_id, relation_type, metadata)
+    VALUES (@source_assertion_id, @target_assertion_id, @relation_type, @metadata)
+    ON CONFLICT(source_assertion_id, target_assertion_id, relation_type) DO UPDATE SET metadata = excluded.metadata
+  `);
+  stmt.run({ source_assertion_id, target_assertion_id, relation_type, metadata: serializeMetadata(metadata) });
+  return db.prepare('SELECT * FROM assertion_relations WHERE source_assertion_id = ? AND target_assertion_id = ? AND relation_type = ?').get(source_assertion_id, target_assertion_id, relation_type);
+}
+
 function insertObservation({ extraction_id, observation_type = 'observation', subject, value, unit = null, attributes = {} }) {
   const stmt = db.prepare(`
     INSERT INTO observations (extraction_id, observation_type, subject, value, unit, attributes)
@@ -551,6 +696,16 @@ function listArtifacts() {
   return deserializeRows(db.prepare('SELECT * FROM raw_artifacts ORDER BY id DESC').all(), []);
 }
 
+function listOntologyDefinitions() {
+  return {
+    domains: deserializeRows(db.prepare('SELECT * FROM domains ORDER BY name').all(), ['metadata']),
+    entity_types: deserializeRows(db.prepare('SELECT * FROM entity_types ORDER BY name').all(), ['constraints', 'metadata']),
+    relationship_types: deserializeRows(db.prepare('SELECT * FROM relationship_types ORDER BY name').all(), ['constraints', 'metadata']),
+    taxonomy_nodes: deserializeRows(db.prepare('SELECT * FROM taxonomy_nodes ORDER BY name').all(), ['metadata']),
+    taxonomy_edges: deserializeRows(db.prepare('SELECT * FROM taxonomy_edges ORDER BY id').all(), ['metadata'])
+  };
+}
+
 function listRecords() {
   return {
     sources: listSources(),
@@ -561,6 +716,9 @@ function listRecords() {
     claims: deserializeRows(db.prepare('SELECT * FROM claims ORDER BY id DESC').all(), ['attributes']),
     observations: deserializeRows(db.prepare('SELECT * FROM observations ORDER BY id DESC').all(), ['attributes']),
     relationships: deserializeRows(db.prepare('SELECT * FROM relationships ORDER BY id DESC').all(), ['attributes']),
+    source_assertions: deserializeRows(db.prepare('SELECT * FROM source_assertions ORDER BY id DESC').all(), ['attributes']),
+    assessments: deserializeRows(db.prepare('SELECT * FROM assessments ORDER BY id DESC').all(), ['metadata']),
+    assertion_relations: deserializeRows(db.prepare('SELECT * FROM assertion_relations ORDER BY id DESC').all(), ['metadata']),
     chunks: deserializeRows(db.prepare('SELECT * FROM chunks ORDER BY id DESC').all(), ['location_metadata']),
     evidence: deserializeRows(db.prepare('SELECT * FROM evidence ORDER BY id DESC').all(), ['metadata'])
   };
@@ -587,6 +745,7 @@ module.exports = {
   getArtifactByHash,
   listSources,
   listArtifacts,
+  listOntologyDefinitions,
   listRecords,
   searchRecords,
   insertSource,
@@ -599,6 +758,9 @@ module.exports = {
   insertEntityAlias,
   insertEntityMention,
   insertClaim,
+  insertSourceAssertion,
+  insertAssessment,
+  insertAssertionRelation,
   insertObservation,
   insertRelationship,
   insertEvidence,

@@ -9,6 +9,7 @@ const {
   getArtifactByHash,
   listSources,
   listArtifacts,
+  listOntologyDefinitions,
   listRecords,
   searchRecords,
   insertSource,
@@ -21,6 +22,8 @@ const {
   insertEntityAlias,
   insertEntityMention,
   insertClaim,
+  insertSourceAssertion,
+  insertAssessment,
   insertObservation,
   insertRelationship,
   insertEvidence,
@@ -180,7 +183,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       source_id: source.id,
       artifact_id: artifact.id,
       processing_version: processingVersion,
-      schema_version: '1.0',
+      schema_version: '2.0',
       method: 'heuristic',
       model: 'local',
       model_version: 'heuristic-v1',
@@ -229,6 +232,29 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       attributes: claim.attributes
     }));
 
+    const sourceAssertions = insertedClaims.map((claim, index) => {
+      const sourceClaim = structured.claims[index];
+      const claimAttributes = sourceClaim.attributes || {};
+      const assertion = insertSourceAssertion({
+        source_id: source.id,
+        artifact_id: artifact.id,
+        extraction_id: extraction.id,
+        claim_id: claim.id,
+        subject: claim.subject,
+        predicate: claim.predicate,
+        object: claim.object,
+        assertion_text: claimAttributes.source_sentence || `${claim.subject} ${claim.predicate} ${claim.object}`,
+        attributes: claimAttributes
+      });
+      insertAssessment({
+        target_type: 'source_assertion',
+        target_id: assertion.id,
+        status: 'unassessed',
+        metadata: { reason: 'Source assertion preserved without treating extraction as verification.' }
+      });
+      return assertion;
+    });
+
     const insertedObservations = structured.observations.slice(0, 10).map((observation) => insertObservation({
       extraction_id: extraction.id,
       observation_type: observation.observation_type,
@@ -250,17 +276,18 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
 
     entityMentions.forEach((mention) => persistRecordEvidence({ artifact, contentRep, record: mention, targetKey: 'entity_mention_id', text: parsed.text, chunkRanges }));
     insertedClaims.forEach((claim) => persistRecordEvidence({ artifact, contentRep, record: claim, targetKey: 'claim_id', text: parsed.text, chunkRanges }));
+    sourceAssertions.forEach((assertion) => persistRecordEvidence({ artifact, contentRep, record: assertion, targetKey: 'assertion_id', text: parsed.text, chunkRanges }));
     insertedObservations.forEach((observation) => persistRecordEvidence({ artifact, contentRep, record: observation, targetKey: 'observation_id', text: parsed.text, chunkRanges }));
     insertedRelationships.forEach((relationship) => persistRecordEvidence({ artifact, contentRep, record: relationship, targetKey: 'relationship_id', text: parsed.text, chunkRanges }));
 
     insertScope({
       extraction_id: extraction.id,
-      geography: 'Unknown',
-      population: 'General population',
-      time_period: 'Not specified',
-      conditions: 'Source-defined',
-      definitions: 'Preserved source language',
-      metadata: { source: 'ingest' }
+      geography: null,
+      population: null,
+      time_period: null,
+      conditions: null,
+      definitions: null,
+      metadata: { source: 'ingest', status: 'unresolved' }
     });
 
     return {
@@ -271,6 +298,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       entities: insertedEntities,
       entityMentions,
       claims: insertedClaims,
+      sourceAssertions,
       observations: insertedObservations,
       relationships: insertedRelationships,
       chunks: chunkRows
@@ -465,7 +493,8 @@ app.get('/api/ontology', (req, res) => {
   res.json(buildPublicContext({
     ontology: {
       schemaVersion: graph.schemaVersion,
-      types: Object.entries(counts).map(([type, count]) => ({ type, count }))
+      types: Object.entries(counts).map(([type, count]) => ({ type, count })),
+      definitions: listOntologyDefinitions()
     }
   }));
 });
