@@ -21,6 +21,14 @@ const {
   insertCanonicalEntity,
   insertEntityAlias,
   insertEntityMention,
+  insertJurisdiction,
+  insertTemporalScope,
+  insertContext,
+  insertProposition,
+  insertState,
+  insertEvent,
+  insertRule,
+  insertMechanism,
   insertClaim,
   insertSourceAssertion,
   insertAssessment,
@@ -143,6 +151,24 @@ function parseRecordAttributes(record) {
   }
 }
 
+function persistContext(attributes = {}) {
+  const context = attributes.context || {};
+  const jurisdiction = context.jurisdiction ? insertJurisdiction({ type: 'JURISDICTION', name: context.jurisdiction }) : null;
+  const temporal = context.temporal ? insertTemporalScope({
+    valid_from: context.temporal.valid_from || null,
+    valid_to: context.temporal.valid_to || null,
+    metadata: { source: 'rule-based-candidate' }
+  }) : null;
+  if (!jurisdiction && !temporal && !context.population && !context.conditions) return null;
+  return insertContext({
+    jurisdiction_id: jurisdiction ? jurisdiction.id : null,
+    temporal_scope_id: temporal ? temporal.id : null,
+    population: context.population || null,
+    conditions: context.conditions || null,
+    metadata: { source: 'rule-based-candidate' }
+  });
+}
+
 function findAssertionContradictions(assertions) {
   const contradictionPairs = [];
   for (let leftIndex = 0; leftIndex < assertions.length; leftIndex += 1) {
@@ -255,7 +281,8 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
     });
     const canonicalEntityIdsByName = new Map(entityMentions.map((mention) => [mention.mention_text.toLowerCase(), mention.canonical_entity_id]));
 
-    const insertedClaims = structured.claims.slice(0, 10).map((claim) => insertClaim({
+    const claimRecords = structured.claims.slice(0, 10);
+    const insertedClaims = claimRecords.map((claim) => insertClaim({
       extraction_id: extraction.id,
       claim_type: claim.claim_type,
       subject: claim.subject,
@@ -263,6 +290,21 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       object: claim.object,
       attributes: claim.attributes
     }));
+
+    const propositions = insertedClaims.map((claim, index) => {
+      const sourceClaim = claimRecords[index];
+      const context = persistContext(sourceClaim.attributes);
+      return insertProposition({
+        proposition_type: sourceClaim.claim_type === 'source_assertion' ? 'source_proposition' : 'proposition',
+        subject_entity_id: canonicalEntityIdsByName.get(String(claim.subject || '').toLowerCase()) || null,
+        subject_text: claim.subject,
+        predicate: claim.predicate,
+        object_entity_id: canonicalEntityIdsByName.get(String(claim.object || '').toLowerCase()) || null,
+        object_text: claim.object,
+        context_id: context ? context.id : null,
+        attributes: sourceClaim.attributes
+      });
+    });
 
     const sourceAssertions = insertedClaims.map((claim, index) => {
       const sourceClaim = structured.claims[index];
@@ -272,6 +314,7 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
         artifact_id: artifact.id,
         extraction_id: extraction.id,
         claim_id: claim.id,
+        proposition_id: propositions[index].id,
         subject: claim.subject,
         predicate: claim.predicate,
         object: claim.object,
@@ -305,6 +348,40 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       attributes: observation.attributes
     }));
 
+    const states = insertedObservations.map((observation, index) => {
+      const sourceObservation = structured.observations[index];
+      const context = persistContext(sourceObservation.attributes);
+      return insertState({
+        subject_entity_id: canonicalEntityIdsByName.get(String(observation.subject || '').toLowerCase()) || null,
+        state_type: observation.observation_type,
+        value: observation.value,
+        unit: observation.unit,
+        context_id: context ? context.id : null,
+        attributes: sourceObservation.attributes
+      });
+    });
+
+    const events = propositions.filter((proposition) => ['AMENDED_IN', 'SUPERSEDED_BY'].includes(proposition.predicate)).map((proposition) => insertEvent({
+      event_type: proposition.predicate === 'AMENDED_IN' ? 'AMENDMENT' : 'SUPERSESSION',
+      subject_entity_id: proposition.subject_entity_id,
+      object_entity_id: proposition.object_entity_id,
+      context_id: proposition.context_id,
+      attributes: { proposition_id: proposition.id }
+    }));
+
+    const rules = propositions.filter((proposition) => ['REQUIRES', 'GOVERNS', 'REGULATES', 'ELIGIBLE_FOR'].includes(proposition.predicate)).map((proposition) => insertRule({
+      rule_type: 'extracted_rule',
+      subject_entity_id: proposition.subject_entity_id,
+      predicate: proposition.predicate,
+      object_entity_id: proposition.object_entity_id,
+      context_id: proposition.context_id,
+      conditions: proposition.context_id ? 'See context.conditions' : null,
+      effective_from: null,
+      effective_to: null,
+      status: 'candidate',
+      attributes: { proposition_id: proposition.id }
+    }));
+
     const insertedRelationships = structured.relationships.slice(0, 10).map((relationship) => insertRelationship({
       extraction_id: extraction.id,
       subject_entity_id: canonicalEntityIdsByName.get(String(relationship.source_entity || '').toLowerCase()) || null,
@@ -314,6 +391,17 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       target_entity: relationship.target_entity,
       attributes: relationship.attributes
     }));
+
+    const mechanisms = insertedRelationships.filter((relationship) => ['AFFECTS', 'CAUSES', 'CORRELATES_WITH', 'DEPENDS_ON'].includes(relationship.relationship_type)).map((relationship) => {
+      const context = persistContext(parseRecordAttributes(relationship));
+      return insertMechanism({
+        mechanism_type: relationship.relationship_type,
+        source_entity_id: relationship.subject_entity_id,
+        target_entity_id: relationship.object_entity_id,
+        context_id: context ? context.id : null,
+        attributes: { relationship_id: relationship.id }
+      });
+    });
 
     entityMentions.forEach((mention) => persistRecordEvidence({ artifact, contentRep, record: mention, targetKey: 'entity_mention_id', text: parsed.text, chunkRanges }));
     insertedClaims.forEach((claim) => persistRecordEvidence({ artifact, contentRep, record: claim, targetKey: 'claim_id', text: parsed.text, chunkRanges }));
@@ -339,10 +427,15 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       entities: insertedEntities,
       entityMentions,
       claims: insertedClaims,
+      propositions,
       sourceAssertions,
       assertionRelations,
       observations: insertedObservations,
+      states,
+      events,
+      rules,
       relationships: insertedRelationships,
+      mechanisms,
       chunks: chunkRows
     };
   })();
@@ -433,8 +526,15 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       extracted: {
         entities: processed.entities,
         claims: processed.claims,
+        propositions: processed.propositions,
         observations: processed.observations,
+        states: processed.states,
+        events: processed.events,
+        rules: processed.rules,
         relationships: processed.relationships,
+        mechanisms: processed.mechanisms,
+        sourceAssertions: processed.sourceAssertions,
+        assertionRelations: processed.assertionRelations,
         chunks: processed.chunks,
         extraction: processed.extraction
       }

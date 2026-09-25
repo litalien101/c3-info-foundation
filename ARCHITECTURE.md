@@ -32,6 +32,7 @@ This MVP establishes the durable information foundation for ingesting source doc
 - Separates canonical entities from document-level mentions and aliases.
 - Stores data-backed entity types, relationship types, domains, jurisdictions, temporal scopes, and taxonomies.
 - Keeps claims, relationships, and assertions independently traceable to their provenance.
+- Represents propositions, states, events, rules, and mechanisms as distinct canonical objects rather than forcing all system information into entity edges.
 - Supports future migration to PostgreSQL without changing the canonical design.
 
 ### 6. Assessment and disagreement layer
@@ -39,17 +40,22 @@ This MVP establishes the durable information foundation for ingesting source doc
 - Preserves competing assertions and explicit `SUPPORTS` or `CONTRADICTS` relations without forcing an early truth decision.
 - Keeps review, confidence, rationale, and revision metadata available for human or downstream evaluation.
 
-### 7. AI knowledge base layer
+### 7. System information layer
+- Uses reusable context records for jurisdiction, time, population, conditions, and definitions.
+- Models observed states, historical events, enforceable rules, and conditional mechanisms separately from graph projections.
+- Keeps the graph and AI context as derived views over these records.
+
+### 8. AI knowledge base layer
 - Takes canonical records and packages them into a graph-ready, compact context layer.
 - Produces entity, relationship, observation, and summary bundles that are easier for AI systems to reason over.
 - Keeps the raw source and the derived graph separated, so the system remains auditable.
 
-### 8. Simulation / 3D system map layer
+### 9. Simulation / 3D system map layer
 - Uses the knowledge base to reconstruct systems, dependencies, flows, outcomes, and bottlenecks.
 - Maps public systems, services, agencies, regulations, and effects into a 3D or graph-like operational model.
 - Enables scenario testing and improvement analysis before real-world changes are implemented.
 
-### 9. Decision layer
+### 10. Decision layer
 - Compares the current system state to alternative configurations.
 - Scores the likely impact of interventions using the extracted structure, evidence, and system relationships.
 - Produces recommendation outputs that can feed back into operational planning.

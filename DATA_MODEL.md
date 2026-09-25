@@ -115,6 +115,73 @@ A measured or observed value with scope and unit metadata.
 - unit
 - attributes
 
+### Proposition
+A canonical, context-aware representation of a subject/predicate/object statement. A proposition may be source-asserted, assessed, or projected into a graph without becoming an unquestioned fact.
+- id
+- proposition_type
+- subject_entity_id / subject_text
+- predicate
+- object_entity_id / object_text
+- context_id
+- attributes
+
+### State
+A value or condition observed for an entity at a point or period in time.
+- id
+- subject_entity_id
+- state_type
+- value
+- unit
+- observed_at
+- context_id
+- attributes
+
+### Event
+Something that happened, such as an amendment, decision, creation, or supersession.
+- id
+- event_type
+- subject_entity_id
+- object_entity_id
+- occurred_at
+- context_id
+- attributes
+
+### Rule
+A requirement, permission, prohibition, or eligibility constraint with explicit conditions and effective scope.
+- id
+- rule_type
+- modality
+- subject_entity_id
+- predicate
+- object_entity_id
+- conditions
+- context_id
+- effective_from / effective_to
+- status
+- attributes
+
+### Mechanism
+A conditional pathway describing how one entity may affect, constrain, enable, cause, or depend on another.
+- id
+- mechanism_type
+- source_entity_id
+- target_entity_id
+- direction
+- conditions
+- context_id
+- confidence
+- attributes
+
+### Context
+Reusable jurisdiction, time, population, condition, and definition scope shared by canonical objects.
+- id
+- jurisdiction_id
+- temporal_scope_id
+- population
+- conditions
+- definitions
+- metadata
+
 ### Relationship
 A directed or typed relation between entities or concepts. The edge can carry stable subject/object IDs, temporal scope, jurisdiction, conditions, confidence, and provenance.
 - id
@@ -157,5 +224,7 @@ A reusable link from a result back to one or more source locations.
 - Canonical data remains independent of AI-specific infrastructure.
 - Source statements are preserved as data, not treated as objective truth.
 - Canonical knowledge must be derived through explicit assessment; extraction alone produces source assertions.
+- Claims are retained for compatibility, while propositions provide the canonical object boundary and source assertions retain what a source actually said.
+- States, events, rules, and mechanisms are separate from generic relationships so system analysis does not flatten every arrow into the same edge type.
 - Reprocessing is allowed by re-running the extraction step against the preserved artifact.
 - Historical or revisionary records can be extended by adding version metadata in the future.

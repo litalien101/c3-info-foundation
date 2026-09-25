@@ -122,12 +122,99 @@ db.exec(`
     FOREIGN KEY (extraction_id) REFERENCES extractions(id)
   );
 
+  CREATE TABLE IF NOT EXISTS contexts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    jurisdiction_id INTEGER,
+    temporal_scope_id INTEGER,
+    population TEXT,
+    conditions TEXT,
+    definitions TEXT,
+    metadata TEXT,
+    FOREIGN KEY (jurisdiction_id) REFERENCES jurisdictions(id),
+    FOREIGN KEY (temporal_scope_id) REFERENCES temporal_scopes(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS propositions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposition_type TEXT NOT NULL DEFAULT 'proposition',
+    subject_entity_id INTEGER,
+    subject_text TEXT,
+    predicate TEXT NOT NULL,
+    object_entity_id INTEGER,
+    object_text TEXT,
+    context_id INTEGER,
+    attributes TEXT,
+    FOREIGN KEY (subject_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (object_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_entity_id INTEGER,
+    state_type TEXT NOT NULL,
+    value TEXT,
+    unit TEXT,
+    observed_at TEXT,
+    context_id INTEGER,
+    attributes TEXT,
+    FOREIGN KEY (subject_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    subject_entity_id INTEGER,
+    object_entity_id INTEGER,
+    occurred_at TEXT,
+    context_id INTEGER,
+    attributes TEXT,
+    FOREIGN KEY (subject_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (object_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_type TEXT NOT NULL,
+    modality TEXT NOT NULL DEFAULT 'required',
+    subject_entity_id INTEGER,
+    predicate TEXT,
+    object_entity_id INTEGER,
+    conditions TEXT,
+    context_id INTEGER,
+    effective_from TEXT,
+    effective_to TEXT,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    attributes TEXT,
+    FOREIGN KEY (subject_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (object_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS mechanisms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mechanism_type TEXT NOT NULL,
+    source_entity_id INTEGER,
+    target_entity_id INTEGER,
+    direction TEXT,
+    conditions TEXT,
+    context_id INTEGER,
+    confidence REAL,
+    attributes TEXT,
+    FOREIGN KEY (source_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (target_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
   CREATE TABLE IF NOT EXISTS source_assertions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id INTEGER NOT NULL,
     artifact_id INTEGER,
     extraction_id INTEGER,
     claim_id INTEGER,
+    proposition_id INTEGER,
     assertion_type TEXT NOT NULL DEFAULT 'source_assertion',
     subject TEXT,
     predicate TEXT,
@@ -140,6 +227,7 @@ db.exec(`
     FOREIGN KEY (artifact_id) REFERENCES raw_artifacts(id),
     FOREIGN KEY (extraction_id) REFERENCES extractions(id),
     FOREIGN KEY (claim_id) REFERENCES claims(id)
+    ,FOREIGN KEY (proposition_id) REFERENCES propositions(id)
   );
 
   CREATE TABLE IF NOT EXISTS assessments (
@@ -334,6 +422,7 @@ ensureColumn('relationships', 'temporal_scope_id', 'INTEGER');
 ensureColumn('relationships', 'jurisdiction_id', 'INTEGER');
 ensureColumn('scopes', 'jurisdiction_id', 'INTEGER');
 ensureColumn('scopes', 'temporal_scope_id', 'INTEGER');
+ensureColumn('source_assertions', 'proposition_id', 'INTEGER');
 
 function serializeMetadata(metadata) {
   return metadata == null ? null : JSON.stringify(metadata);
@@ -553,6 +642,79 @@ function insertEntityMention({ extraction_id, entity_id = null, canonical_entity
   return db.prepare('SELECT * FROM entity_mentions WHERE id = ?').get(result.lastInsertRowid);
 }
 
+function insertJurisdiction({ parent_id = null, type = 'JURISDICTION', name, code = null, metadata = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO jurisdictions (parent_id, type, name, code, metadata)
+    VALUES (@parent_id, @type, @name, @code, @metadata)
+    ON CONFLICT(type, name) DO UPDATE SET parent_id = COALESCE(excluded.parent_id, jurisdictions.parent_id), code = COALESCE(excluded.code, jurisdictions.code)
+  `);
+  stmt.run({ parent_id, type, name, code, metadata: serializeMetadata(metadata) });
+  return db.prepare('SELECT * FROM jurisdictions WHERE type = ? AND name = ?').get(type, name);
+}
+
+function insertTemporalScope({ published_at = null, retrieved_at = null, effective_from = null, effective_to = null, observed_at = null, valid_from = null, valid_to = null, metadata = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO temporal_scopes (published_at, retrieved_at, effective_from, effective_to, observed_at, valid_from, valid_to, metadata)
+    VALUES (@published_at, @retrieved_at, @effective_from, @effective_to, @observed_at, @valid_from, @valid_to, @metadata)
+  `);
+  const result = stmt.run({ published_at, retrieved_at, effective_from, effective_to, observed_at, valid_from, valid_to, metadata: serializeMetadata(metadata) });
+  return db.prepare('SELECT * FROM temporal_scopes WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertContext({ jurisdiction_id = null, temporal_scope_id = null, population = null, conditions = null, definitions = null, metadata = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO contexts (jurisdiction_id, temporal_scope_id, population, conditions, definitions, metadata)
+    VALUES (@jurisdiction_id, @temporal_scope_id, @population, @conditions, @definitions, @metadata)
+  `);
+  const result = stmt.run({ jurisdiction_id, temporal_scope_id, population, conditions, definitions, metadata: serializeMetadata(metadata) });
+  return db.prepare('SELECT * FROM contexts WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertProposition({ proposition_type = 'proposition', subject_entity_id = null, subject_text = null, predicate, object_entity_id = null, object_text = null, context_id = null, attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO propositions (proposition_type, subject_entity_id, subject_text, predicate, object_entity_id, object_text, context_id, attributes)
+    VALUES (@proposition_type, @subject_entity_id, @subject_text, @predicate, @object_entity_id, @object_text, @context_id, @attributes)
+  `);
+  const result = stmt.run({ proposition_type, subject_entity_id, subject_text, predicate, object_entity_id, object_text, context_id, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM propositions WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertState({ subject_entity_id = null, state_type, value = null, unit = null, observed_at = null, context_id = null, attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO states (subject_entity_id, state_type, value, unit, observed_at, context_id, attributes)
+    VALUES (@subject_entity_id, @state_type, @value, @unit, @observed_at, @context_id, @attributes)
+  `);
+  const result = stmt.run({ subject_entity_id, state_type, value, unit, observed_at, context_id, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM states WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertEvent({ event_type, subject_entity_id = null, object_entity_id = null, occurred_at = null, context_id = null, attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO events (event_type, subject_entity_id, object_entity_id, occurred_at, context_id, attributes)
+    VALUES (@event_type, @subject_entity_id, @object_entity_id, @occurred_at, @context_id, @attributes)
+  `);
+  const result = stmt.run({ event_type, subject_entity_id, object_entity_id, occurred_at, context_id, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM events WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertRule({ rule_type, modality = 'required', subject_entity_id = null, predicate = null, object_entity_id = null, conditions = null, context_id = null, effective_from = null, effective_to = null, status = 'proposed', attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO rules (rule_type, modality, subject_entity_id, predicate, object_entity_id, conditions, context_id, effective_from, effective_to, status, attributes)
+    VALUES (@rule_type, @modality, @subject_entity_id, @predicate, @object_entity_id, @conditions, @context_id, @effective_from, @effective_to, @status, @attributes)
+  `);
+  const result = stmt.run({ rule_type, modality, subject_entity_id, predicate, object_entity_id, conditions, context_id, effective_from, effective_to, status, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM rules WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertMechanism({ mechanism_type, source_entity_id = null, target_entity_id = null, direction = null, conditions = null, context_id = null, confidence = null, attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO mechanisms (mechanism_type, source_entity_id, target_entity_id, direction, conditions, context_id, confidence, attributes)
+    VALUES (@mechanism_type, @source_entity_id, @target_entity_id, @direction, @conditions, @context_id, @confidence, @attributes)
+  `);
+  const result = stmt.run({ mechanism_type, source_entity_id, target_entity_id, direction, conditions, context_id, confidence, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM mechanisms WHERE id = ?').get(result.lastInsertRowid);
+}
+
 function insertClaim({ extraction_id, claim_type = 'claim', subject, predicate, object, attributes = {} }) {
   const stmt = db.prepare(`
     INSERT INTO claims (extraction_id, claim_type, subject, predicate, object, attributes)
@@ -569,16 +731,17 @@ function insertClaim({ extraction_id, claim_type = 'claim', subject, predicate, 
   return db.prepare('SELECT * FROM claims WHERE id = ?').get(result.lastInsertRowid);
 }
 
-function insertSourceAssertion({ source_id, artifact_id = null, extraction_id = null, claim_id = null, assertion_type = 'source_assertion', subject = null, predicate = null, object = null, assertion_text, status = 'unassessed', attributes = {} }) {
+function insertSourceAssertion({ source_id, artifact_id = null, extraction_id = null, claim_id = null, proposition_id = null, assertion_type = 'source_assertion', subject = null, predicate = null, object = null, assertion_text, status = 'unassessed', attributes = {} }) {
   const stmt = db.prepare(`
-    INSERT INTO source_assertions (source_id, artifact_id, extraction_id, claim_id, assertion_type, subject, predicate, object, assertion_text, status, attributes)
-    VALUES (@source_id, @artifact_id, @extraction_id, @claim_id, @assertion_type, @subject, @predicate, @object, @assertion_text, @status, @attributes)
+    INSERT INTO source_assertions (source_id, artifact_id, extraction_id, claim_id, proposition_id, assertion_type, subject, predicate, object, assertion_text, status, attributes)
+    VALUES (@source_id, @artifact_id, @extraction_id, @claim_id, @proposition_id, @assertion_type, @subject, @predicate, @object, @assertion_text, @status, @attributes)
   `);
   const result = stmt.run({
     source_id,
     artifact_id,
     extraction_id,
     claim_id,
+    proposition_id,
     assertion_type,
     subject,
     predicate,
@@ -713,6 +876,12 @@ function listRecords() {
     entities: deserializeRows(db.prepare('SELECT * FROM entities ORDER BY id DESC').all(), ['attributes']),
     canonical_entities: deserializeRows(db.prepare('SELECT * FROM canonical_entities ORDER BY id DESC').all(), ['attributes']),
     entity_mentions: deserializeRows(db.prepare('SELECT * FROM entity_mentions ORDER BY id DESC').all(), ['attributes']),
+    contexts: deserializeRows(db.prepare('SELECT * FROM contexts ORDER BY id DESC').all(), ['metadata']),
+    propositions: deserializeRows(db.prepare('SELECT * FROM propositions ORDER BY id DESC').all(), ['attributes']),
+    states: deserializeRows(db.prepare('SELECT * FROM states ORDER BY id DESC').all(), ['attributes']),
+    events: deserializeRows(db.prepare('SELECT * FROM events ORDER BY id DESC').all(), ['attributes']),
+    rules: deserializeRows(db.prepare('SELECT * FROM rules ORDER BY id DESC').all(), ['attributes']),
+    mechanisms: deserializeRows(db.prepare('SELECT * FROM mechanisms ORDER BY id DESC').all(), ['attributes']),
     claims: deserializeRows(db.prepare('SELECT * FROM claims ORDER BY id DESC').all(), ['attributes']),
     observations: deserializeRows(db.prepare('SELECT * FROM observations ORDER BY id DESC').all(), ['attributes']),
     relationships: deserializeRows(db.prepare('SELECT * FROM relationships ORDER BY id DESC').all(), ['attributes']),
@@ -757,6 +926,14 @@ module.exports = {
   insertCanonicalEntity,
   insertEntityAlias,
   insertEntityMention,
+  insertJurisdiction,
+  insertTemporalScope,
+  insertContext,
+  insertProposition,
+  insertState,
+  insertEvent,
+  insertRule,
+  insertMechanism,
   insertClaim,
   insertSourceAssertion,
   insertAssessment,
