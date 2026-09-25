@@ -34,6 +34,10 @@ const {
   insertMechanism,
   insertCanonicalMechanism,
   insertMechanismResolution,
+  insertProcess,
+  insertProcessStep,
+  insertProcessTransition,
+  insertResourceFlow,
   insertClaim,
   insertSourceAssertion,
   insertAssessment,
@@ -516,6 +520,38 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
     });
     const mechanismResolutions = mechanisms.map((mechanism) => resolveMechanismMerge(mechanism));
 
+    const processRecords = [];
+    const processStepRecords = [];
+    const processTransitionRecords = [];
+    const resourceFlowRecords = [];
+    for (const processCandidate of structured.processes || []) {
+      const processContext = persistContext(processCandidate.attributes);
+      const process = insertProcess({
+        process_type: processCandidate.process_type,
+        name: processCandidate.name,
+        status: 'candidate',
+        context_id: processContext ? processContext.id : null,
+        attributes: processCandidate.attributes
+      });
+      const steps = processCandidate.steps.map((stepName, index) => insertProcessStep({
+        process_id: process.id,
+        sequence: index + 1,
+        name: stepName,
+        context_id: processContext ? processContext.id : null,
+        attributes: processCandidate.attributes
+      }));
+      for (let index = 1; index < steps.length; index += 1) {
+        processTransitionRecords.push(insertProcessTransition({
+          process_id: process.id,
+          from_step_id: steps[index - 1].id,
+          to_step_id: steps[index].id,
+          attributes: { source: 'rule-based-candidate' }
+        }));
+      }
+      processRecords.push(process);
+      processStepRecords.push(...steps);
+    }
+
     const entityEvidence = entityMentions.map((mention) => persistRecordEvidence({ artifact, contentRep, record: mention, targetKey: 'entity_mention_id', text: parsed.text, chunkRanges }));
     const claimEvidence = insertedClaims.map((claim) => persistRecordEvidence({ artifact, contentRep, record: claim, targetKey: 'claim_id', text: parsed.text, chunkRanges }));
     const assertionEvidence = sourceAssertions.map((assertion) => persistRecordEvidence({ artifact, contentRep, record: assertion, targetKey: 'assertion_id', text: parsed.text, chunkRanges }));
@@ -541,6 +577,14 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       const mechanismRelationship = insertedRelationships.find((relationship) => relationship.id === parseRecordAttributes(mechanism).relationship_id);
       const mechanismIndex = mechanismRelationship ? insertedRelationships.indexOf(mechanismRelationship) : -1;
       if (mechanismIndex >= 0) linkProvenance('mechanism', mechanism.id, relationshipEvidence[mechanismIndex], extraction.id);
+    });
+    processRecords.forEach((process) => {
+      const evidenceRows = persistRecordEvidence({ artifact, contentRep, record: process, targetKey: 'process_id', text: parsed.text, chunkRanges });
+      linkProvenance('process', process.id, evidenceRows, extraction.id);
+    });
+    processStepRecords.forEach((step) => {
+      const evidenceRows = persistRecordEvidence({ artifact, contentRep, record: step, targetKey: 'process_step_id', text: parsed.text, chunkRanges });
+      linkProvenance('process_step', step.id, evidenceRows, extraction.id);
     });
 
     insertScope({
@@ -572,6 +616,10 @@ function persistExtractionForArtifact({ source, artifact, fileBuffer, mimeType, 
       relationships: insertedRelationships,
       mechanisms,
       mechanismResolutions,
+      processes: processRecords,
+      processSteps: processStepRecords,
+      processTransitions: processTransitionRecords,
+      resourceFlows: resourceFlowRecords,
       chunks: chunkRows
     };
   })();
@@ -735,6 +783,10 @@ app.get('/api/knowledge-base', (req, res) => {
     events: records.events || [],
     rules: records.rules || [],
     mechanisms: records.mechanisms || [],
+    processes: records.processes || [],
+    process_steps: records.process_steps || [],
+    process_transitions: records.process_transitions || [],
+    resource_flows: records.resource_flows || [],
     canonical_entities: records.canonical_entities || []
   });
 
@@ -758,7 +810,11 @@ app.get('/api/knowledge-base', (req, res) => {
       stateCount: graph.summary.stateCount,
       eventCount: graph.summary.eventCount,
       ruleCount: graph.summary.ruleCount,
-      mechanismCount: graph.summary.mechanismCount
+      mechanismCount: graph.summary.mechanismCount,
+      processCount: graph.summary.processCount,
+      processStepCount: graph.summary.processStepCount,
+      transitionCount: graph.summary.transitionCount,
+      resourceFlowCount: graph.summary.resourceFlowCount
     }
   };
 
@@ -778,6 +834,10 @@ app.get('/api/ontology', (req, res) => {
     events: records.events || [],
     rules: records.rules || [],
     mechanisms: records.mechanisms || [],
+    processes: records.processes || [],
+    process_steps: records.process_steps || [],
+    process_transitions: records.process_transitions || [],
+    resource_flows: records.resource_flows || [],
     canonical_entities: records.canonical_entities || []
   });
 

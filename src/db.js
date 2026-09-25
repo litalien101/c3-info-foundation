@@ -243,6 +243,60 @@ db.exec(`
     FOREIGN KEY (context_id) REFERENCES contexts(id)
   );
 
+  CREATE TABLE IF NOT EXISTS processes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    process_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'candidate',
+    context_id INTEGER,
+    attributes TEXT,
+    FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS process_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    process_id INTEGER NOT NULL,
+    sequence INTEGER NOT NULL,
+    step_type TEXT NOT NULL DEFAULT 'step',
+    name TEXT NOT NULL,
+    actor_entity_id INTEGER,
+    context_id INTEGER,
+    attributes TEXT,
+    UNIQUE (process_id, sequence),
+    FOREIGN KEY (process_id) REFERENCES processes(id),
+    FOREIGN KEY (actor_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS process_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    process_id INTEGER NOT NULL,
+    from_step_id INTEGER NOT NULL,
+    to_step_id INTEGER NOT NULL,
+    condition TEXT,
+    attributes TEXT,
+    UNIQUE (process_id, from_step_id, to_step_id),
+    FOREIGN KEY (process_id) REFERENCES processes(id),
+    FOREIGN KEY (from_step_id) REFERENCES process_steps(id),
+    FOREIGN KEY (to_step_id) REFERENCES process_steps(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_flows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    process_id INTEGER,
+    source_entity_id INTEGER,
+    target_entity_id INTEGER,
+    resource_type TEXT NOT NULL,
+    quantity REAL,
+    unit TEXT,
+    context_id INTEGER,
+    attributes TEXT,
+    FOREIGN KEY (process_id) REFERENCES processes(id),
+    FOREIGN KEY (source_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (target_entity_id) REFERENCES canonical_entities(id),
+    FOREIGN KEY (context_id) REFERENCES contexts(id)
+  );
+
   CREATE TABLE IF NOT EXISTS canonical_mechanisms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fingerprint TEXT NOT NULL UNIQUE,
@@ -850,6 +904,44 @@ function insertMechanismResolution({ canonical_mechanism_id, mechanism_id, resol
   return db.prepare('SELECT * FROM mechanism_resolutions WHERE canonical_mechanism_id = ? AND mechanism_id = ? AND resolution_type = ?').get(canonical_mechanism_id, mechanism_id, resolution_type);
 }
 
+function insertProcess({ process_type, name, status = 'candidate', context_id = null, attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO processes (process_type, name, status, context_id, attributes)
+    VALUES (@process_type, @name, @status, @context_id, @attributes)
+  `);
+  const result = stmt.run({ process_type, name, status, context_id, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM processes WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function insertProcessStep({ process_id, sequence, step_type = 'step', name, actor_entity_id = null, context_id = null, attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO process_steps (process_id, sequence, step_type, name, actor_entity_id, context_id, attributes)
+    VALUES (@process_id, @sequence, @step_type, @name, @actor_entity_id, @context_id, @attributes)
+    ON CONFLICT(process_id, sequence) DO UPDATE SET name = excluded.name, attributes = excluded.attributes
+  `);
+  stmt.run({ process_id, sequence, step_type, name, actor_entity_id, context_id, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM process_steps WHERE process_id = ? AND sequence = ?').get(process_id, sequence);
+}
+
+function insertProcessTransition({ process_id, from_step_id, to_step_id, condition = null, attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO process_transitions (process_id, from_step_id, to_step_id, condition, attributes)
+    VALUES (@process_id, @from_step_id, @to_step_id, @condition, @attributes)
+    ON CONFLICT(process_id, from_step_id, to_step_id) DO UPDATE SET condition = excluded.condition, attributes = excluded.attributes
+  `);
+  stmt.run({ process_id, from_step_id, to_step_id, condition, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM process_transitions WHERE process_id = ? AND from_step_id = ? AND to_step_id = ?').get(process_id, from_step_id, to_step_id);
+}
+
+function insertResourceFlow({ process_id = null, source_entity_id = null, target_entity_id = null, resource_type, quantity = null, unit = null, context_id = null, attributes = {} }) {
+  const stmt = db.prepare(`
+    INSERT INTO resource_flows (process_id, source_entity_id, target_entity_id, resource_type, quantity, unit, context_id, attributes)
+    VALUES (@process_id, @source_entity_id, @target_entity_id, @resource_type, @quantity, @unit, @context_id, @attributes)
+  `);
+  const result = stmt.run({ process_id, source_entity_id, target_entity_id, resource_type, quantity, unit, context_id, attributes: serializeMetadata(attributes) });
+  return db.prepare('SELECT * FROM resource_flows WHERE id = ?').get(result.lastInsertRowid);
+}
+
 function insertRuleCondition({ rule_id, field, operator, value = null, unit = null, logical_group = 'all', metadata = {} }) {
   const stmt = db.prepare(`
     INSERT INTO rule_conditions (rule_id, field, operator, value, unit, logical_group, metadata)
@@ -1040,6 +1132,10 @@ function listRecords() {
     mechanisms: deserializeRows(db.prepare('SELECT * FROM mechanisms ORDER BY id DESC').all(), ['attributes']),
     canonical_mechanisms: deserializeRows(db.prepare('SELECT * FROM canonical_mechanisms ORDER BY id DESC').all(), ['attributes']),
     mechanism_resolutions: deserializeRows(db.prepare('SELECT * FROM mechanism_resolutions ORDER BY id DESC').all(), ['metadata']),
+    processes: deserializeRows(db.prepare('SELECT * FROM processes ORDER BY id DESC').all(), ['attributes']),
+    process_steps: deserializeRows(db.prepare('SELECT * FROM process_steps ORDER BY id DESC').all(), ['attributes']),
+    process_transitions: deserializeRows(db.prepare('SELECT * FROM process_transitions ORDER BY id DESC').all(), ['attributes']),
+    resource_flows: deserializeRows(db.prepare('SELECT * FROM resource_flows ORDER BY id DESC').all(), ['attributes']),
     rule_conditions: deserializeRows(db.prepare('SELECT * FROM rule_conditions ORDER BY id DESC').all(), ['metadata']),
     provenance_links: deserializeRows(db.prepare('SELECT * FROM provenance_links ORDER BY id DESC').all(), ['metadata']),
     claims: deserializeRows(db.prepare('SELECT * FROM claims ORDER BY id DESC').all(), ['attributes']),
@@ -1098,6 +1194,10 @@ module.exports = {
   insertMechanism,
   insertCanonicalMechanism,
   insertMechanismResolution,
+  insertProcess,
+  insertProcessStep,
+  insertProcessTransition,
+  insertResourceFlow,
   insertRuleCondition,
   insertProvenanceLink,
   insertClaim,

@@ -46,6 +46,7 @@ This MVP establishes the durable information foundation for ingesting source doc
 - Links every proposition, state, event, rule, and mechanism directly to evidence through `provenance_links`.
 - Keeps mechanism magnitude, lag, polarity, certainty, assumptions, and description available without pretending the extractor knows them when it does not.
 - Keeps the graph and AI context as derived views over these records.
+- Represents candidate workflows as processes, ordered steps, transitions, and future resource flows.
 
 ### 8. AI knowledge base layer
 - Takes canonical records and packages them into a graph-ready, compact context layer.
@@ -58,10 +59,9 @@ This MVP establishes the durable information foundation for ingesting source doc
 - Maps public systems, services, agencies, regulations, and effects into a 3D or graph-like operational model.
 - Enables scenario testing and improvement analysis before real-world changes are implemented.
 
-### 10. Decision layer
-- Compares the current system state to alternative configurations.
-- Scores the likely impact of interventions using the extracted structure, evidence, and system relationships.
-- Produces recommendation outputs that can feed back into operational planning.
+### 10. Future analysis and decision support
+- The current repository prepares evidence-backed information for future system analysis.
+- Scenario comparison, intervention scoring, simulation, and recommendations remain downstream work rather than current MVP behavior.
 
 ## Key implementation principle
 This MVP deliberately avoids destructive normalization. Where the source contains a value, unit, population, geography, or definition, the system preserves the original text and stores its derived interpretation alongside it.
@@ -79,6 +79,7 @@ RAW SOURCE
 
 - A source assertion records what a source says; it is not a truth claim by C3.
 - A proposition is the canonical statement boundary; a claim remains for extraction compatibility.
+- `canonical` means normalized representation, not truth; assessment controls validity and confidence.
 - Extracted rules, events, and mechanisms have candidate status until assessed.
 - Context is attached before comparing assertions; jurisdiction, population, and time mismatches are not automatic contradictions.
 - Evidence and provenance remain attached to canonical objects even when those objects are projected into a graph.

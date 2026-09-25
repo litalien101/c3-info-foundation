@@ -195,6 +195,7 @@ async function parseDocument(fileBuffer, mimeType, sourceTitle = 'Document') {
     claims: structured.claims,
     observations: structured.observations,
     relationships: structured.relationships,
+    processes: structured.processes,
     summary: parsed.text.slice(0, 280) || 'No summary available.',
     graph: {
       entities: structured.entities,
@@ -222,6 +223,7 @@ function extractStructuredContent(documentText) {
   const relationships = [];
   const claims = [];
   const observations = [];
+  const processes = [];
 
   const predicateMap = {
     administers: 'ADMINISTERS',
@@ -469,11 +471,28 @@ function extractStructuredContent(documentText) {
     }
   }
 
+  const workflowLines = text.split(/\n+/).map((line) => line.trim()).filter((line) => /(?:->|→)/.test(line));
+  for (const workflowLine of workflowLines) {
+    const steps = workflowLine.split(/\s*(?:->|→)\s*/).map((step) => step.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
+    if (steps.length < 2) continue;
+    const firstStep = steps.shift();
+    const namedWorkflow = firstStep.match(/^(.+?)\s*:\s*(.+)$/);
+    const processName = (namedWorkflow ? namedWorkflow[1] : firstStep).replace(/^(?:process|workflow)\s*:\s*/i, '').trim() || 'Extracted workflow';
+    const orderedSteps = namedWorkflow ? [processName, namedWorkflow[2], ...steps] : [processName, ...steps];
+    processes.push({
+      process_type: 'workflow',
+      name: processName,
+      steps: orderedSteps,
+      attributes: { source: 'rule-based-candidate', evidence: evidenceForText(text, workflowLine), status: 'candidate' }
+    });
+  }
+
   return {
     entities: dedupeList(entities, (entity) => `${entity.type}|${entity.canonical_name}`),
     claims: dedupeList(claims, (claim) => `${claim.subject}|${claim.predicate}|${claim.object}`),
     observations: dedupeList(observations, (observation) => `${observation.subject}|${observation.value}|${observation.unit}`),
-    relationships: dedupeList(relationships, (relationship) => `${relationship.relationship_type}|${relationship.source_entity}|${relationship.target_entity}`)
+    relationships: dedupeList(relationships, (relationship) => `${relationship.relationship_type}|${relationship.source_entity}|${relationship.target_entity}`),
+    processes: dedupeList(processes, (process) => `${process.process_type}|${process.name}|${process.steps.join('|')}`)
   };
 }
 
@@ -566,6 +585,10 @@ function buildKnowledgeBaseGraph(records = {}) {
   const events = Array.isArray(records.events) ? records.events : [];
   const rules = Array.isArray(records.rules) ? records.rules : [];
   const mechanisms = Array.isArray(records.mechanisms) ? records.mechanisms : [];
+  const processes = Array.isArray(records.processes) ? records.processes : [];
+  const processSteps = Array.isArray(records.process_steps) ? records.process_steps : [];
+  const processTransitions = Array.isArray(records.process_transitions) ? records.process_transitions : [];
+  const resourceFlows = Array.isArray(records.resource_flows) ? records.resource_flows : [];
   const canonicalEntities = Array.isArray(records.canonical_entities) ? records.canonical_entities : [];
   const sources = Array.isArray(records.sources) ? records.sources : [];
 
@@ -641,6 +664,14 @@ function buildKnowledgeBaseGraph(records = {}) {
     addNode(targetName, inferOntologyType(targetName, 'MECHANISM_TARGET'), { source: 'mechanism' });
   }
 
+  for (const process of processes) {
+    addNode(process.name, 'PROCESS', { source: 'process', status: process.status });
+  }
+
+  for (const step of processSteps) {
+    addNode(step.name, 'PROCESS_STEP', { source: 'process_step', process_id: step.process_id });
+  }
+
   for (const relationship of relationships) {
     const sourceName = relationship.source_entity || relationship.source || 'Unknown source';
     const targetName = relationship.target_entity || relationship.target || 'Unknown target';
@@ -702,6 +733,28 @@ function buildKnowledgeBaseGraph(records = {}) {
       weight: 0.8,
       attributes: event.attributes || {},
       evidence: event.attributes || {}
+    })),
+    ...processTransitions.map((transition, index) => {
+      const fromStep = processSteps.find((step) => step.id === transition.from_step_id);
+      const toStep = processSteps.find((step) => step.id === transition.to_step_id);
+      return {
+        id: `transition:${transition.id || index + 1}`,
+        source: `node:${normalizeGraphKey(fromStep ? fromStep.name : 'Unknown process step')}`,
+        target: `node:${normalizeGraphKey(toStep ? toStep.name : 'Unknown process step')}`,
+        type: 'TRANSITIONS_TO',
+        weight: 0.9,
+        attributes: transition.attributes || {},
+        evidence: transition.attributes || {}
+      };
+    }),
+    ...resourceFlows.map((flow, index) => ({
+      id: `flow:${flow.id || index + 1}`,
+      source: `node:${normalizeGraphKey(entityLabelsById.get(flow.source_entity_id) || 'Unknown flow source')}`,
+      target: `node:${normalizeGraphKey(entityLabelsById.get(flow.target_entity_id) || 'Unknown flow target')}`,
+      type: 'RESOURCE_FLOW',
+      weight: 0.8,
+      attributes: { resource_type: flow.resource_type, quantity: flow.quantity, unit: flow.unit, ...flow.attributes },
+      evidence: flow.attributes || {}
     }))
   ];
 
@@ -722,6 +775,10 @@ function buildKnowledgeBaseGraph(records = {}) {
       eventCount: events.length,
       ruleCount: rules.length,
       mechanismCount: mechanisms.length,
+      processCount: processes.length,
+      processStepCount: processSteps.length,
+      transitionCount: processTransitions.length,
+      resourceFlowCount: resourceFlows.length,
       sourceCount: sources.length
     }
   };

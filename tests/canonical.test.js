@@ -23,6 +23,10 @@ test('canonical ontology is seeded and source assertions are queryable', () => {
   assert.ok(Array.isArray(records.mechanisms));
   assert.ok(Array.isArray(records.canonical_mechanisms));
   assert.ok(Array.isArray(records.mechanism_resolutions));
+  assert.ok(Array.isArray(records.processes));
+  assert.ok(Array.isArray(records.process_steps));
+  assert.ok(Array.isArray(records.process_transitions));
+  assert.ok(Array.isArray(records.resource_flows));
   assert.ok(Array.isArray(records.rule_conditions));
   assert.ok(Array.isArray(records.provenance_links));
 });

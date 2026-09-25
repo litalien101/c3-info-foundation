@@ -182,6 +182,47 @@ A conditional pathway describing how one entity may affect, constrain, enable, c
 - assumptions
 - attributes
 
+### Process
+A candidate operational workflow with ordered steps and transitions.
+- id
+- process_type
+- name
+- status
+- context_id
+- attributes
+
+### ProcessStep
+An ordered action or decision within a process.
+- id
+- process_id
+- sequence
+- step_type
+- name
+- actor_entity_id
+- context_id
+- attributes
+
+### ProcessTransition
+A directed transition between process steps.
+- id
+- process_id
+- from_step_id
+- to_step_id
+- condition
+- attributes
+
+### ResourceFlow
+A future-ready representation of a resource moving between entities within or outside a process.
+- id
+- process_id
+- source_entity_id
+- target_entity_id
+- resource_type
+- quantity
+- unit
+- context_id
+- attributes
+
 ### CanonicalMechanism and MechanismResolution
 Mechanism representatives and immutable extracted mechanism rows are connected through the same resolution pattern used for propositions.
 

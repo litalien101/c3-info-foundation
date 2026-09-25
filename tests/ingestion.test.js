@@ -50,6 +50,22 @@ test('extractStructuredContent captures jurisdiction, conditions, time, and comp
   assert.equal(sourceB.predicate, 'NO_STATISTICALLY_SIGNIFICANT_EFFECT');
 });
 
+test('extractStructuredContent preserves workflow order as a process candidate', () => {
+  const result = extractStructuredContent('Child support workflow: Application -> Eligibility determination -> Case establishment -> Enforcement');
+
+  assert.equal(result.processes.length, 1);
+  assert.equal(result.processes[0].process_type, 'workflow');
+  assert.deepEqual(result.processes[0].steps, [
+    'Child support workflow',
+    'Application',
+    'Eligibility determination',
+    'Case establishment',
+    'Enforcement'
+  ]);
+  assert.equal(result.processes[0].attributes.status, 'candidate');
+  assert.ok(result.processes[0].attributes.evidence.length === 1);
+});
+
 test('parseDocument supports structured and unstructured formats and builds AI-ready context', async () => {
   const jsonDoc = {
     title: 'Programs',
